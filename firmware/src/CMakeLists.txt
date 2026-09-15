@@ -1,0 +1,31 @@
+idf_component_register(
+    SRCS
+        "main.cpp"
+        "app/button.cpp"
+        "audio/audio_recorder.cpp"
+        "audio/wav_writer.cpp"
+        "display/epaper_display.cpp"
+        "display/ui.cpp"
+        "network/api_client.cpp"
+        "network/wifi_manager.cpp"
+        "storage/note_store.cpp"
+    INCLUDE_DIRS
+        "."
+        "../include"
+    REQUIRES
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_http_client
+        esp-tls
+        nvs_flash
+        fatfs
+        sdmmc
+        esp_driver_sdmmc
+        esp_driver_i2s
+        esp_driver_i2c
+        esp_driver_spi
+        esp_driver_gpio
+        json
+        esp_codec_dev
+)

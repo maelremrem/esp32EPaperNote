@@ -1,0 +1,22 @@
+[Unit]
+Description=ESP32 Voice Notes Whisper API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=voicenotes
+Group=voicenotes
+WorkingDirectory=/opt/voice-notes/server
+EnvironmentFile=/etc/voice-notes.env
+ExecStart=/opt/voice-notes/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080 --workers 1
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/voice-notes
+
+[Install]
+WantedBy=multi-user.target
