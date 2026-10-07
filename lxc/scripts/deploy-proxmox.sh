@@ -2,6 +2,7 @@
 # Independent installer. No Community Scripts code or remote helper execution.
 set -Eeuo pipefail
 set +x
+export LC_ALL=C LANG=C
 umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LXC_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -26,6 +27,11 @@ SCRATCH=''
 cleanup() { [[ -z "$SCRATCH" ]] || rm -rf -- "$SCRATCH"; }
 failed() {
   echo "Failed phase: $PHASE; CTID: $VMID. Any created CT is kept for diagnostics." >&2
+  if [[ "$PHASE" == readiness || "$PHASE" == update ]]; then
+    echo 'Check CT DNS, DHCP/static gateway, bridge and firewall. A working host network does not prove CT connectivity.' >&2
+    timeout 10 pct exec "$VMID" -- env LC_ALL=C LANG=C bash -c 'ip -4 addr show dev eth0; ip -4 route; printf "DNS configuration:\n"; cat /etc/resolv.conf; getent ahostsv4 deb.debian.org; getent ahostsv4 security.debian.org' >&2 || true
+    echo "Repair DNS if appropriate: pct set $VMID --nameserver <reachable-DNS-IPv4>" >&2
+  fi
   echo "Inspect: pct status $VMID; pct exec $VMID -- journalctl -u voice-notes-api -n 100" >&2
 }
 trap cleanup EXIT
@@ -41,7 +47,7 @@ VMID=$(pvesh get /cluster/nextid)
 HOSTNAME=voice-notes-stt
 CORES=4 MEMORY_MB=4096 SWAP_MB=1024 DISK_GB=16
 STORAGE=${ROOT_STORES%% *} TEMPLATE_STORAGE=${TEMPLATE_STORES%% *} BRIDGE=${BRIDGES%% *}
-IP_CONFIG=dhcp GATEWAY=none DNS=inherit WHISTLE_LANGUAGE=fr
+IP_CONFIG=dhcp GATEWAY=none DNS=1.1.1.1 WHISTLE_LANGUAGE=fr
 API_TOKEN='' UNPRIVILEGED=1 START_ON_BOOT=1
 if ((UNATTENDED)); then
   [[ -f "$ENV_FILE" ]] || { echo 'Missing unattended env file.' >&2; exit 1; }
@@ -86,7 +92,7 @@ ask TEMPLATE_STORAGE "Template storage ($TEMPLATE_STORES)" "${TEMPLATE_STORES%% 
 ask BRIDGE "Bridge ($BRIDGES)" "${BRIDGES%% *}"
 ask IP_CONFIG 'IPv4 CIDR or dhcp' dhcp
 ask GATEWAY 'Gateway (none for DHCP)' none
-ask DNS 'DNS IPv4 (inherit for host settings)' inherit
+ask DNS 'DNS IPv4 (use your LAN resolver if public DNS is blocked; inherit for host settings)' "$DNS"
 ask WHISTLE_LANGUAGE 'Whistle language' fr
 fi
 phase validation
@@ -166,35 +172,35 @@ pct start "$VMID"
 await() {
   local attempt
   for ((attempt=0; attempt<60; attempt++)); do
-    if timeout 10 pct exec "$VMID" -- "$@" >/dev/null 2>&1; then return 0; fi
+    if timeout 10 pct exec "$VMID" -- env LC_ALL=C LANG=C "$@" >/dev/null 2>&1; then return 0; fi
     sleep 2
   done
   echo "Timed out waiting for $PHASE." >&2
   return 1
 }
 phase readiness
-await bash -c 'getent hosts deb.debian.org >/dev/null && timeout 5 bash -c "exec 4<>/dev/tcp/deb.debian.org/80"'
+await bash -ec 'ip -4 route show default | grep -q .; for repository in deb.debian.org security.debian.org; do address=$(getent ahostsv4 "$repository" | head -n 1 | cut -d " " -f 1); test -n "$address"; timeout 3 bash -c "exec 4<>/dev/tcp/$address/80"; done'
 phase update
-pct exec "$VMID" -- bash -c 'export DEBIAN_FRONTEND=noninteractive; apt-get update && apt-get -y upgrade'
+pct exec "$VMID" -- env LC_ALL=C LANG=C bash -ec 'export DEBIAN_FRONTEND=noninteractive; apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=3 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15; apt-get -y upgrade'
 phase payload
 SCRATCH=$(mktemp -d)
 tar -C "$LXC_DIR" -czf "$SCRATCH/payload.tar.gz" server/app.py server/requirements.txt \
   server/web/index.html server/web/app.css server/web/app.js systemd/voice-notes-api.service scripts/install-server.sh
 pct push "$VMID" "$SCRATCH/payload.tar.gz" /root/voice-notes-deploy.tar.gz
-pct exec "$VMID" -- bash -c 'umask 077; mkdir -p /root/voice-notes-deploy; tar -xzf /root/voice-notes-deploy.tar.gz -C /root/voice-notes-deploy'
+pct exec "$VMID" -- env LC_ALL=C LANG=C bash -c 'umask 077; mkdir -p /root/voice-notes-deploy; tar -xzf /root/voice-notes-deploy.tar.gz -C /root/voice-notes-deploy'
 phase install
 [[ "$WHISTLE_LANGUAGE" != auto ]] || WHISTLE_LANGUAGE=''
 if [[ -n "$API_TOKEN" ]]; then
   printf 'export API_TOKEN=%q\n' "$API_TOKEN" > "$SCRATCH/installer.env"
   pct push "$VMID" "$SCRATCH/installer.env" /root/voice-notes-installer.env --perms 0600
-  pct exec "$VMID" -- env "WHISTLE_LANGUAGE=$WHISTLE_LANGUAGE" bash -c 'set +x; source /root/voice-notes-installer.env; trap "rm -f /root/voice-notes-installer.env" EXIT; bash /root/voice-notes-deploy/scripts/install-server.sh'
+  pct exec "$VMID" -- env LC_ALL=C LANG=C "WHISTLE_LANGUAGE=$WHISTLE_LANGUAGE" bash -c 'set +x; source /root/voice-notes-installer.env; trap "rm -f /root/voice-notes-installer.env" EXIT; bash /root/voice-notes-deploy/scripts/install-server.sh'
 else
-  pct exec "$VMID" -- env "WHISTLE_LANGUAGE=$WHISTLE_LANGUAGE" bash /root/voice-notes-deploy/scripts/install-server.sh
+  pct exec "$VMID" -- env LC_ALL=C LANG=C "WHISTLE_LANGUAGE=$WHISTLE_LANGUAGE" bash /root/voice-notes-deploy/scripts/install-server.sh
 fi
 phase service
 await systemctl is-active --quiet voice-notes-api.service
 phase address
-ADDRESSES=$(pct exec "$VMID" -- ip -4 -o addr show dev eth0 scope global)
+ADDRESSES=$(pct exec "$VMID" -- env LC_ALL=C LANG=C ip -4 -o addr show dev eth0 scope global)
 IP=$(python3 -c 'import ipaddress,sys; a=[ipaddress.ip_interface(x.split()[x.split().index("inet")+1]).ip for x in sys.argv[1].splitlines() if "inet" in x.split()]; print(next(str(x) for x in a if not (x.is_loopback or x.is_link_local or x.is_unspecified or x.is_multicast)))' "$ADDRESSES")
 phase health
 await curl --fail --silent --show-error --max-time 5 "http://$IP:8080/health"

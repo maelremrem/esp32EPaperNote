@@ -56,9 +56,13 @@ if name == 'pct':
         command = ' '.join(args[3:])
         if 'install-server.sh' in command and fail == 'interrupt-install': time.sleep(5)
         if 'apt-get' in command and fail == 'update': sys.exit(1)
+        if 'apt-get' in command and fail == 'partial-update':
+            print("W: Failed to fetch: Temporary failure resolving 'security.debian.org'")
+            if 'APT::Update::Error-Mode=any' in command: sys.exit(100)
         if 'install-server.sh' in command and fail == 'install': sys.exit(1)
         if 'systemctl is-active' in command and fail == 'service': sys.exit(1)
-        if 'getent hosts' in command and fail == 'internet': sys.exit(1)
+        if 'getent' in command and fail == 'internet': sys.exit(1)
+        if 'getent' in command and 'security.debian.org' in command and fail == 'security-dns': sys.exit(1)
         if 'curl' in command and fail in ('internet', 'health'): sys.exit(1)
         if 'ip -4' in command: print('2: eth0 inet ' + os.environ.get('ASSIGNED_IP','192.168.7.41') + '/24 scope global eth0')
     sys.exit()
@@ -130,6 +134,7 @@ def test_interactive_install_full_payload_and_health(host):
     assert creation[creation.index('--rootfs')+1] == 'ct-fast:16'
     assert creation[creation.index('--unprivileged')+1] == '1'
     assert 'bridge=vmbr7,ip=dhcp' in creation[creation.index('--net0')+1]
+    assert creation[creation.index('--nameserver')+1] == '1.1.1.1'
     assert any('apt-get update' in ' '.join(c) and 'upgrade' in ' '.join(c) for c in invoked)
     assert any('systemctl is-active' in ' '.join(c) for c in invoked)
     assert any('http://192.168.7.41:8080/health' in ' '.join(c) for c in invoked)
@@ -346,3 +351,78 @@ def test_interrupt_after_creation_keeps_ct_and_cleans_only_scratch(host):
     assert any(c[:2] == ['pct','create'] for c in calls(host))
     assert not any(c[:2] in (['pct','destroy'],['pct','stop']) for c in calls(host))
     assert 'health verified' not in output
+
+
+def test_partial_apt_update_aborts_before_payload(host):
+    code, output = run_tty(LXC/'scripts/deploy-proxmox.sh',dict(host[1],FAIL='partial-update'),defaults())
+    assert code != 0, output
+    assert 'Failed phase: update' in output
+    assert not any(c[:2] == ['pct','push'] for c in calls(host))
+    assert 'health verified' not in output
+
+
+def test_security_repository_dns_failure_aborts_before_apt(host):
+    code, output = run_tty(LXC/'scripts/deploy-proxmox.sh',dict(host[1],FAIL='security-dns'),defaults())
+    assert code != 0, output
+    assert 'Failed phase: readiness' in output
+    assert not any('apt-get' in ' '.join(c) for c in calls(host))
+    assert 'DNS' in output and 'gateway' in output
+
+
+def test_ct_commands_use_available_c_locale(host):
+    code, output = run_tty(LXC/'scripts/deploy-proxmox.sh',host[1],defaults())
+    assert code == 0, output
+    for command in calls(host):
+        if command[:2] == ['pct','exec']:
+            assert command[4:7] == ['env','LC_ALL=C','LANG=C'], command
+
+
+def test_inner_installer_partial_update_stops_before_package_install(host):
+    fake = Path(host[1]['PATH'].split(':')[0])/'apt-get'
+    fake.write_text(f'#!{PYTHON}\nimport json, os, sys\n'
+                    'with open(os.environ["CALLS"], "a") as f: f.write(json.dumps(["apt-get"] + sys.argv[1:]) + "\\n")\n'
+                    'if "update" in sys.argv: sys.exit(100 if "APT::Update::Error-Mode=any" in sys.argv else 0)\n'
+                    'sys.exit(88)\n')
+    fake.chmod(0o755)
+    source = (LXC/'scripts/install-server.sh').read_text().split('if ! id voicenotes',1)[0]
+    # Use the isolated fake id for the root guard, never run as real root.
+    source = source.replace('${EUID:-$(id -u)}', '$(id -u)')
+    script = host[0]/'inner-install.sh'
+    script.write_text(source)
+    result = subprocess.run(['bash',str(script)],env=host[1],capture_output=True,text=True)
+    assert result.returncode == 100, result.stderr
+    assert not any('install' in c for c in calls(host) if c[0]=='apt-get')
+
+
+def test_explicit_inherit_dns_remains_supported(host):
+    answers = ['']*13 + ['yes']
+    answers[11] = 'inherit'
+    code, output = run_tty(LXC/'scripts/deploy-proxmox.sh',host[1],'\n'.join(answers)+'\n')
+    assert code == 0, output
+    creation = next(c for c in calls(host) if c[:2] == ['pct','create'])
+    assert '--nameserver' not in creation
+
+
+@pytest.mark.parametrize('failure', ['', 'route', 'deb.debian.org', 'security.debian.org', 'tcp'])
+def test_actual_readiness_shell_requires_route_both_dns_and_tcp(host, failure):
+    commands = Path(host[1]['PATH'].split(':')[0])
+    fake = f'#!{PYTHON}\n' + '''import os, sys
+from pathlib import Path
+name = Path(sys.argv[0]).name
+failure = os.environ['PROBE_FAIL']
+if name == 'ip':
+    if failure != 'route': print('default via 192.168.7.1 dev eth0')
+elif name == 'getent':
+    if sys.argv[-1] == failure: sys.exit(2)
+    print('192.0.2.20 STREAM ' + sys.argv[-1])
+elif name == 'timeout':
+    sys.exit(1 if failure == 'tcp' else 0)
+'''
+    for name in ('ip','getent','timeout'):
+        path = commands/name
+        path.write_text(fake)
+        path.chmod(0o755)
+    source = (LXC/'scripts/deploy-proxmox.sh').read_text()
+    probe = source.split("await bash -ec '",1)[1].split("'\nphase update",1)[0]
+    result = subprocess.run(['bash','-ec',probe],env=dict(host[1],PROBE_FAIL=failure),capture_output=True,text=True)
+    assert (result.returncode == 0) == (failure == ''), result.stderr

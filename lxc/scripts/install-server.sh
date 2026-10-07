@@ -10,8 +10,9 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
-export DEBIAN_FRONTEND=noninteractive
-apt-get update
+export DEBIAN_FRONTEND=noninteractive LC_ALL=C LANG=C
+apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=3 \
+  -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15
 apt-get install -y --no-install-recommends \
   ca-certificates curl openssl python3 python3-venv python3-pip
 

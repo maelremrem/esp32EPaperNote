@@ -50,9 +50,8 @@ bash -c 'set -e; script=$(curl --fail --silent --show-error --location --proto "
 ```
 
 The wrapper executes nothing if the initial download fails. Prefer downloading
-and inspecting the bootstrap before root execution. This URL returned **404**
-during local verification: this work has not been committed, pushed or deployed.
-Do not advertise it as a live installer yet. `main` is mutable; for reviewed,
+and inspecting the bootstrap before root execution. Local fixes are not available
+through this URL until published to GitHub. `main` is mutable; for reviewed,
 immutable code replace `main` in the raw URL with a full commit SHA and pass
 `--revision <same-40-character-SHA>` to the bootstrap. For an inspected local
 bootstrap: `bash lxc/scripts/bootstrap-proxmox.sh --revision <full-SHA>`.
@@ -76,7 +75,10 @@ Input bounds are CPU 1–256, RAM 128–1048576 MiB, swap 0–1048576 MiB, disk
 4–65536 GiB and CTID 100–999999999. These are input sanity limits, not a promise
 that the host has capacity. Proxmox performs final resource checks. A static
 address must include a prefix of /30 or wider, usable host IPv4 and gateway in
-the same subnet. DNS accepts one IPv4 or `inherit`. Unprivileged mode is always
+the same subnet. DNS accepts one IPv4 (default `1.1.1.1`) or explicit `inherit`.
+Use your reachable LAN resolver if public DNS is blocked. Inherited host DNS can
+point to a loopback stub or resolver inaccessible from the CT; host connectivity
+does not prove CT connectivity. Unprivileged mode is always
 enabled; no nesting/keyctl features are needed. The validated summary requires
 an explicit `yes` **before mutation**. Invalid input aborts without mutation;
 rerun to correct it. No token is requested or displayed interactively.
@@ -84,10 +86,15 @@ rerun to correct it. No token is requested or displayed interactively.
 After confirmation the installer refreshes the template catalog, selects a
 validated Debian 13 amd64 standard template, downloads it if absent and reads
 the template list back before create. It starts the CT and retries bounded
-execution/DNS/repository TCP connectivity instead of a blind startup delay.
-The CT (not the host) runs `apt-get update` and `apt-get -y upgrade`, then the
+execution/default-route/IPv4 DNS/TCP connectivity for both Debian repositories
+instead of a blind startup delay. CT commands use the always-available `C` locale
+so a minimal template does not need `en_US.UTF-8` generated before installation.
+The CT (not the host) runs strict `apt-get update` and `apt-get -y upgrade`, then the
 existing service installer, including native/model warmup. Only seven explicit
 runtime payload files are pushed (no tests, caches or local credentials).
+Both update paths use `APT::Update::Error-Mode=any`, three acquire retries and
+15-second HTTP/HTTPS timeouts: missing indexes abort rather than proceeding with
+stale metadata. This also catches DNS/network failures occurring after readiness.
 Readiness, service and health checks each have up to 60 attempts, with a
 10-second command timeout and 2-second interval; package/model downloads can
 take longer. No host apt changes are made.
@@ -101,6 +108,35 @@ write to `/etc/voice-notes.env`; it is never printed or put in `pct exec` argv.
 Failures name the phase/CTID and give journal hints. Created CTs are **kept**
 for diagnostics, never automatically stopped or destroyed. Interrupt traps
 remove only installer scratch; review a partially created CT manually.
+
+### Recover a CT after a DNS failure
+
+Do not rerun the creation bootstrap with the same ID or delete the CT blindly.
+For example, inspect failed CT 135 from the Proxmox host:
+
+```bash
+pct exec 135 -- env LC_ALL=C LANG=C bash -c 'ip -4 addr show dev eth0; ip -4 route; cat /etc/resolv.conf'
+# Replace this public resolver with a reachable LAN DNS if required.
+pct set 135 --nameserver 1.1.1.1
+pct exec 135 -- env LC_ALL=C LANG=C getent ahostsv4 deb.debian.org
+pct exec 135 -- env LC_ALL=C LANG=C getent ahostsv4 security.debian.org
+pct exec 135 -- env LC_ALL=C LANG=C bash -ec 'export DEBIAN_FRONTEND=noninteractive; apt-get update -o APT::Update::Error-Mode=any -o Acquire::Retries=3; apt-get -y upgrade'
+```
+
+If resolution still fails, fix the bridge, DHCP/static route or firewall before
+installing packages. No DNS choice can repair missing CT network connectivity.
+For a failure at package download **before service configuration was created**, the
+already-transferred payload can be installed once the commands above succeed:
+
+```bash
+pct exec 135 -- env LC_ALL=C LANG=C WHISTLE_LANGUAGE=fr bash /root/voice-notes-deploy/scripts/install-server.sh
+pct exec 135 -- env LC_ALL=C LANG=C systemctl is-active voice-notes-api.service
+# Replace <CT-IP> with the actual eth0 IPv4 from the inspection above.
+pct exec 135 -- curl --fail --max-time 5 http://<CT-IP>:8080/health
+```
+
+Do not use fresh install for an already-configured service: it may replace the
+token; use the update workflow below and back up data/configuration instead.
 
 ### Explicit unattended compatibility
 
