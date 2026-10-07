@@ -13,9 +13,9 @@ TEST = r'''
 int main() {
     store.mount_ok = false;
     int events = 0;
-    queue_hook = [&]() {
+    button_queue_hook = [&](void *out) {
         if (events == 2) throw std::runtime_error("end after queued navigation");
-        *static_cast<app::ButtonEvent *>(mock_event_destination) = events++ == 0
+        *static_cast<app::ButtonEvent *>(out) = events++ == 0
             ? app::ButtonEvent::LongPress : app::ButtonEvent::ShortPress;
         return pdTRUE;
     };
@@ -23,10 +23,14 @@ int main() {
     try { app_main(); } catch (const std::runtime_error &) { loop_reached = true; }
     CHECK(loop_reached && events == 2);
     CHECK(state == AppState::Menu && menu_index == 1 && ui.screen == "settings");
-    menu_index = 5; executeMenuItem();
-    queue_hook = {};
-    CHECK(!sd_mounted && ui.screen == "idle");
-    handleButton(app::ButtonEvent::ShortPress);
+    menu_index = 3; executeMenuItem();
+    handleButton(app::ButtonEvent::LongPress); // Storage status row.
+    button_queue_hook = {};
+    CHECK(!sd_mounted && ui.screen == "info");
+    handleButton(app::ButtonEvent::LongPress); // Return to Storage submenu.
+    handleButton(app::ButtonEvent::ShortPress); handleButton(app::ButtonEvent::ShortPress);
+    handleButton(app::ButtonEvent::LongPress); // Return to Settings.
+    menu_index = 6; executeMenuItem();
     CHECK(state == AppState::Idle && recorder.starts == 0 && active_note_id.empty());
     web.queued = true; web.command = network::web::Command::Start; handleWebCommand();
     CHECK(web.result == "rejected" && recorder.starts == 0);
@@ -35,20 +39,25 @@ int main() {
     handleButton(app::ButtonEvent::ShortPress);
     CHECK(menu_index == 1 && ui.selected == 1);
     menu_index = 3; executeMenuItem();
+    handleButton(app::ButtonEvent::LongPress); // Storage status row.
     CHECK(!sd_mounted && ui.screen == "info");
     store.mount_ok = true;
     handleButton(app::ButtonEvent::LongPress); // Back from info.
     handleButton(app::ButtonEvent::LongPress); // Retry Storage after insertion.
     CHECK(sd_mounted && state == AppState::Menu && ui.screen == "info");
     CHECK(store.writes == 0 && store.discards == 0 && store.commits == 0);
-    handleButton(app::ButtonEvent::LongPress); menu_index = 5; executeMenuItem();
+    handleButton(app::ButtonEvent::ShortPress); handleButton(app::ButtonEvent::ShortPress); handleButton(app::ButtonEvent::ShortPress);
+    handleButton(app::ButtonEvent::LongPress); // Return from Storage submenu.
+    menu_index = 6; executeMenuItem(); // Back to Idle.
     handleButton(app::ButtonEvent::ShortPress);
     CHECK(recorder.starts == 1 && state == AppState::Recording);
     handleButton(app::ButtonEvent::ShortPress); recorder.clean = false; pollRecording();
     CHECK(recording_recovery_required && store.discards == 0);
     handleButton(app::ButtonEvent::LongPress); menu_index = 3; executeMenuItem();
+    handleButton(app::ButtonEvent::LongPress); // Storage status row.
     CHECK(recording_recovery_required); // Retry must never clear retained-WAV protection.
-    handleButton(app::ButtonEvent::LongPress); menu_index = 5; executeMenuItem();
+    handleButton(app::ButtonEvent::LongPress); menu_index = 3; executeMenuItem();
+    handleButton(app::ButtonEvent::LongPress); // Storage status row.
     handleButton(app::ButtonEvent::ShortPress); CHECK(recorder.starts == 1);
     state = AppState::Idle; recording_recovery_required = false;
     recorder = audio::AudioRecorder{}; recorder.init_ok = false;
@@ -70,11 +79,7 @@ def main():
     scratch = Path(os.environ.get('TMPDIR', Path.home() / '.hermes/cache/scratch'))
     with tempfile.TemporaryDirectory(prefix='boot-storage-', dir=scratch) as tmp:
         d = Path(tmp)
-        mocks = (ROOT/'firmware/tests/stubs/navigation_mocks.h').read_text().replace(
-            'inline int xQueueReceive(int, void *, int) {',
-            'inline void *mock_event_destination = nullptr;\n'
-            'inline int xQueueReceive(int, void *destination, int) {\n'
-            '    mock_event_destination = destination;')
+        mocks = (ROOT/'firmware/tests/stubs/navigation_mocks.h').read_text()
         (d/'navigation_mocks.h').write_text(mocks)
         (d / 'test.cpp').write_text('#include "navigation_mocks.h"\n' + source + '\n' + TEST)
         command = shlex.split(os.environ.get('CXX', 'g++')) + ['-std=c++17', '-Wall', '-Wextra', '-Wno-unused-variable',

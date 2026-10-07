@@ -1,152 +1,176 @@
 # Carnet: local ESP32 web console
 
-Open `http://<station-IPv4>/` from the same trusted Wi-Fi network. The address is
-available in the ESP32 serial log after association (`Got IP`). Use the literal
-IPv4 address, not a hostname or reverse proxy: API requests validate Host and
-Origin against the device's current station address (optional `:80`). No access
-point, mDNS, credential editor or remote control service is introduced.
+Open `http://<ESP32 station IPv4>/` on the same trusted Wi-Fi network. Use the
+literal address shown under physical **Settings → Wi-Fi → ESP32 IP**, not a
+hostname or reverse proxy. Fixed Host and Origin checks run before authorization.
+No station API starts the captive access point.
 
-Enter the existing `VOICE_NOTES_API_TOKEN` in the password field. The page keeps
-it only in memory/the open form; it does not use cookies, localStorage or
-sessionStorage and never includes a token in assets or status. Maximum supported
-length is 248 bytes (Authorization header is bounded to 255 bytes). An empty
-configured token fails closed. Status and all commands require Bearer auth.
+## Local authorization is independent of transcription
 
-**HTTP is not encrypted.** Only use this on a trusted private LAN. Do not port
-forward port 80 or expose it publicly. Sharing the API token means this interface
-uses the same authority as the transcription service; a dedicated local token
-and HTTPS can be added if separate access control is needed. No Wi-Fi passwords,
-SSID or API token are served. The transcription base URL is available only after authentication.
+On the ESP32 select **Settings → Wi-Fi → Open web settings**. The panel shows the
+address and a fresh six-digit random PIN, including any leading zeros. Choose
+**Connect** in the website or open locked **Settings**, then enter the PIN in the
+connection modal. Cancel/Escape closes it without authorization; PIN input is
+cleared when it closes. Five incorrect submitted credentials revoke the PIN and
+queued commands across all API routes. Reopen access physically for a new PIN;
+successful requests do not reset the failure budget. Missing authorization or
+foreign Host/Origin requests do not consume PIN attempts.
+This physically authorized session has an absolute ten-minute lifetime, not a
+sliding lifetime. Opening another session invalidates the old code. Station loss,
+IP change, server stop, expiry, or authenticated **Disconnect** revokes access.
 
-## Transcription server address
+The Settings shell and transcription address/token fields can be opened before
+pairing; reads of private settings, notes, status, downloads and every write remain
+protected by the local code. The LXC/STT token is **never** accepted as console
+authorization. No permanent local password, cookies, localStorage or sessionStorage
+are used. Codes go only in Authorization headers, never URLs, logs or assets.
+Bearer headers plus fixed-origin/Host validation protect against cross-site writes.
+Requests queued before expiry/loss are rejected when main takes the mailbox.
+Disconnect clears private readback, passwords, note content and code immediately;
+late responses are discarded by an access-generation check.
 
-After connecting, edit **Server base URL (protocol, IPv4 and port)** and select
-**Save server address**. Example: `http://192.168.1.20:8000`. This is the server,
-not the ESP32 address used to open this portal. Only literal IPv4 with `http://`
-or `https://` and an optional decimal port (1–65535) is supported. Without a port,
-HTTP uses 80 and HTTPS uses 443. No hostname, IPv6, trailing slash/base path,
-credentials, query, fragment, whitespace/control character or leading-zero
-address/port is accepted. Loopback, unspecified, multicast/reserved, link-local
-and the ESP32’s current address are rejected. The URL is bounded to 63 bytes.
-HTTPS requires a trusted certificate valid for the server IP; certificate checks
-are not disabled. HTTP sends audio and the shared token in plaintext: trusted LAN only.
+**HTTP is plaintext.** Use a trusted private LAN only. Do not expose ESP32 port 80
+publicly. Anyone who can observe the code over this LAN can use it until revoked.
+Physical flash access can recover unencrypted NVS secrets; this firmware does not
+claim secure flash storage or TLS for the local console.
 
-The server must still accept the existing **firmware-compiled
-`VOICE_NOTES_API_TOKEN`**. Changing the URL does not change authentication or edit
-Wi-Fi credentials. The same new address is used for both live PCM16 previews and
-final WAV uploads. Preview windows remain nonoverlapping 4.096 seconds; audio
-formats and backend contracts are unchanged. HTTP redirects are disabled on both
-upload paths so the configured target cannot redirect the credential elsewhere.
+## Settings
 
-- GET `/api/config/server`: authenticated, `Cache-Control: no-store`; returns
-  `base_url`, `command_id`, `command_result`, `command_busy`, never the token.
-- POST same path: `Content-Type: application/json`, exactly one `base_url` string;
-  body at most 256 bytes, with no JSON escapes/control characters. Partial or
-  malformed bodies return 400, oversized bodies 413. Host/Origin/Bearer protection
-  is identical to the other API routes; an authenticated editor can choose another
-  unicast IP, so access tokens must only be shared with trusted administrators.
-- Changes use the existing one-slot mailbox; HTTP never mutates ApiClient or NVS.
-  Allowed in idle or menu, even without SD/audio; recording, finalizing, syncing,
-  reconnecting or an occupied mailbox returns 409. Main revalidates the state and
-  device-self address after dequeue. Menu-triggered sync also publishes `syncing`.
-- 202 is **queued, not saved**. Main stores NVS string `server/base_url`; only after
-  successful open/write/commit does it activate and publish the address. Failure
-  reports `failed` and retains the prior current address; state changes report
-  `rejected`. Config edits run only after recording workers have joined and outside
-  synchronization. ApiClient additionally takes mutex-protected immutable URL
-  copies per request so string changes cannot race a preview request.
-- Boot loads after NVS init, before preview/final requests. Missing, wrong-type,
-  unreadable, oversized or invalid saved values use `VOICE_NOTES_API_BASE_URL`
-  without rewriting flash. Once Wi-Fi reveals the station IP, an idle/menu check
-  rejects a saved endpoint that is now device-self (for example after DHCP changes).
-  The compile-time fallback remains the existing trusted build configuration.
-- The form loads after unlock, never overwrites edits during status polls, and
-  waits for completion then reads back the exact requested URL and matching command
-  result before showing “saved”. Failure keeps edits for retry. Another tab replacing
-  a result is not success. Polls begun before enqueue cannot cancel the pending save.
-  Disconnect or any 401 clears the token, URL and note data; late JSON responses
-  from an earlier access session cannot repopulate it. Nothing is browser-persisted.
+Choose **Settings** beside **Notebook**, then Wi-Fi, Transcription server, Display
+or Storage. The existing two-slot Wi-Fi, reconnect, persistent refresh interval,
+non-destructive mount retry and Cancel-default, single-use 60-second format
+confirmation remain available. SSIDs are read back, passwords are not. Blank
+password retains a secret only for an unchanged SSID; new passwordless networks
+require explicit Open. Saving Wi-Fi does not reconnect; Reconnect is separate and
+may change the device address. Offline provisioning remains physically started.
 
-## Behavior
+Storage reports actual mounted/audio readiness, `NoteStore::lastError()` and FAT
+usage. Main queries the installed IDF `esp_vfs_fat_info` only with stopped workers,
+never during a download lease. A successful nonzero total and free <= total yield
+used/total plus a gauge; errors/unavailable/busy storage say **Usage unknown**, not
+an invented percentage. Bytes are uint64 internally; JSON numbers use cJSON's
+numeric representation. Format still requires mounted responsive FAT storage,
+stopped workers and main revalidation; damaged/unmountable cards need external
+formatting. All cache entries are invalidated once destruction starts.
 
-- English, framework-free HTML/CSS/JS, local assets embedded in flash. `Carnet`
-  uses a light monochrome Workbench layout; no CDN, font downloads or animation.
-- Wi-Fi/IP, application state, pending WAV count, session's last note and
-  provisional live text. The latest note is RAM session state, not SD history
-  reloaded after reboot. Text previews are capped at 4096 bytes, at UTF-8 boundaries.
-- Record uses the ESP32 microphone. Start is blocked in the menu, recording,
-  syncing, reconnecting and SD-recovery states. Stop is offered only during a
-  recording and never claims that the WAV has already been finalized.
-- Sync is offered only when idle, connected and there are pending WAV files.
-  Existing automatic transcription and physical-button controls are unchanged.
-- POST `/api/command/{start,stop,sync}` has no request body. 202 means **queued**,
-  not executed. A one-slot mutex-protected mailbox stays reserved until main
-  completes the command. Duplicate/busy/inapplicable commands return 409.
-- Main revalidates every dequeued command against the current application state
-  (including a physical button changing it after enqueue). Only main touches the
-  recorder, note store and application state. HTTP only reads bounded snapshots
-  or reserves the mailbox. Failed/rejected commands are reported in status.
-- GET `/api/status` is authenticated; fields include `command_id`,
-  `command_result` (`pending`, `ok`, `stopping`, `failed`, `rejected`) and
-  `command_busy`. Polling continues during synchronous transcription.
-- The browser disables commands on failed requests, handles 401/403/409, preserves
-  command errors and reconnects. It handles another tab replacing the last result
-  without claiming its own command succeeded. Transcript rendering uses textContent.
-- UI focus rings, labelled form, live status, 44px targets, no motion, responsive
-  at 320/375/414/768/1440px. The e-paper driver, renderers and refresh waveforms are
-  untouched. Main publishes status without repeated SD scans during capture.
+## Runtime transcription URL and write-only token
 
-## Reproducible checks (repository root)
+**Settings → Transcription server** accepts either a literal IPv4, `IPv4:port`, or
+a full `http://`/`https://` IPv4 origin. The browser expands bare IPv4 to HTTP port
+8080 and preserves explicit origin protocols/ports. Full origins without a port
+retain normal HTTP 80 / HTTPS 443 behavior. No hostname, IPv6, credentials, path,
+query, fragment, control character, ambiguous leading zeros, loopback, unspecified,
+multicast/reserved, link-local or current-device address is accepted. Maximum URL
+length is 63 bytes. HTTPS requires a trusted certificate matching the server IP.
+Both preview and final upload disable HTTP redirects.
+
+The **New transcription server token** is write-only, at most 192 printable
+non-space ASCII bytes. Blank means unchanged. To remove the token, leave it blank
+and explicitly select **Clear the saved transcription token**. The browser clears
+entered secrets on submission/readback/logout; API GETs return only a configured
+flag and successful-change revision. Clearing the token disables transcription,
+not local WAV capture or web access. The original compile token remains a migration
+default only when no valid saved `server/token` exists; an explicitly saved empty
+token stays empty across reboot.
+
+Main validates URL/token again and writes NVS `server/base_url` and optional
+`server/token`. Only after commit succeeds does it atomically activate the pair.
+Failures retain the previous runtime pair. ApiClient takes one mutex-protected,
+immutable URL/token snapshot per final or live request. No secrets are read back
+or echoed into browser storage. A 202 response is **queued**, not saved; the UI
+waits for matching successful completion, exact URL, a newer revision and, when
+changed, the expected configured flag before claiming success.
+
+### APIs
+
+All API routes require the physical-session Bearer code plus fixed Host/Origin.
+
+- GET `/api/status`: bounded state/text and command completion snapshot.
+- GET `/api/settings`: SSIDs/IP, mount/audio diagnostic, refresh interval, format
+  challenge and `usage_known`, `total_bytes`, `free_bytes`; no passwords.
+- POST `/api/settings`: JSON cap 768 bytes. Existing exact schemas:
+  `{"action":"wifi","profiles":[{"ssid":"Home","password":"","open":false},{"ssid":"Hotspot","password":"","open":false}]}`;
+  `{"action":"display","partial_limit":20}`; `{"action":"mount"}`;
+  `{"action":"reconnect"}`; `{"action":"prepare_format"}`;
+  `{"action":"format","challenge":123}`. The sample challenge is not usable.
+- GET `/api/config/server`: `base_url`, `token_configured`, `server_revision` and
+  matching command metadata, never the token.
+- POST same path: JSON cap 512 bytes, required `base_url`, optional `token` and
+  optional boolean `clear_token`. Blank token keeps the previous value; nonblank
+  token and true clear together are rejected. Unknown/duplicate fields, malformed
+  JSON, escaped controls/NUL and incomplete bodies fail closed.
+- POST `/api/command/{start,stop,sync}`: empty body, 202 means queued.
+- POST `/api/session/close`: empty body; revokes the local session.
+- GET `/api/notes`: bounded newest 40 stable safe IDs with `audio` and
+  `transcribed` flags. Audio-only includes cancelled pending notes.
+- GET `/api/download/audio?id=<safe-ID>` or `/api/download/markdown?id=<safe-ID>`:
+  read-only attachments, `audio/wav` or `text/markdown; charset=utf-8`, stable
+  `<ID>.wav`/`<ID>.md` filename, no-store/nosniff. No path or percent-encoded ID.
+  Markdown returns the **complete generated file**, not the reader's truncated
+  transcript prefix. Missing/malformed/nonregular/symlink files are rejected.
+
+## Downloads and SD exclusion
+
+HTTP never calls NoteStore or opens an arbitrary path. It reserves the one-slot
+mailbox and a bounded lease. Main revalidates idle/menu, mounted card and joined
+workers, resolves the safe ID, validates generated Markdown and opens a regular
+read-only file. Ownership of that FILE is transferred to the handler only through
+the mutex-protected handoff. While leased, physical and web recording, sync,
+format, mounting, cancellation and portal launch are blocked; main skips SD scans
+and capacity queries. A 2-second handoff timeout releases the request; a stale
+main reply closes its file immediately.
+
+The handler streams the observed file size in <=2048-byte chunks, without loading
+WAV into ESP32 RAM. Every success, read failure, socket abort, session loss/expiry
+and timeout closes the FILE **before** releasing exclusion. There is no card-pointer
+use in HTTP. Browser downloads fetch authenticated bytes into a Blob, trigger the
+attachment filename and revoke the object URL; original card files are unchanged.
+Browser memory usage depends on file size; the ESP32 stream remains bounded.
+
+## Physical pending cancellation
+
+**Settings → Sync** now opens **Sync now / Pending notes / Cancel all pending /
+Back**. Pending notes offers selective cancellation. Both selective and all use
+an explicit **Back-default** warning; Back keeps pending notes. The confirming
+choice archives the original WAV without generating a transcription. An existing
+archive collision or filesystem error retains that source pending; counts report
+actual results. Saved history/downloads retain audio-only status. No in-progress
+blocking synchronization HTTP request is aborted; cancel while idle/in the menu.
+
+## Reproducible checks
 
 ```sh
-python3 firmware/tests/run_web_tests.py
+python3 firmware/tests/test_pending_cancellation.py
+python3 firmware/tests/test_runtime_token.py
+python3 firmware/tests/run_note_history_tests.py
+python3 firmware/tests/test_boot_storage_mount.py
 python3 firmware/tests/run_web_server_tests.py
-node firmware/tests/web_ui_test.mjs
-node firmware/tests/web_server_settings_test.mjs
-python3 firmware/tests/test_server_url.py
 python3 firmware/tests/test_server_settings.py
 python3 firmware/tests/test_api_runtime.py
-python3 firmware/tests/run_live_preview_tests.py
+python3 firmware/tests/test_web_settings.py
+node firmware/tests/web_ui_test.mjs
+node firmware/tests/web_settings_test.mjs
+node firmware/tests/web_server_settings_test.mjs
+node firmware/tests/web_download_test.mjs
 python3 tests/ui/render_test.py
-CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined' python3 firmware/tests/run_web_tests.py
-CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined' python3 firmware/tests/run_web_server_tests.py
-CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined' python3 firmware/tests/run_live_preview_tests.py
-CXX=clang++ UI_TEST_CXXFLAGS='-fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all' python3 tests/ui/render_test.py
-pio run -e waveshare_epaper_154_v2 -t clean
-PLATFORMIO_BUILD_FLAGS="-I$PWD/firmware/tests/build_fixture" pio run -e waveshare_epaper_154_v2
-python3 firmware/tests/test_web_build_assets.py
+CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' python3 firmware/tests/run_web_server_tests.py
 ```
 
-Host HTTP checks compile the **real** `web_server.cpp` and installed IDF cJSON.
-Only FreeRTOS mutex and HTTP transport are replaced with host adapters. They
-exercise auth, hostile Host/Origin, bounded headers, served assets, JSON escaping,
-queue reservation, command results and concurrent snapshot publication. They do
-not simulate actual sockets or the recorder/SD.
-
-Browser checks require Playwright and a local Chrome binary, installed outside
-the repository:
+UI tests require scratch `portal-qr-venv` (Pillow/zxing-cpp) to decode the actual
+framebuffer QR, with no skips. Chrome checks use scratch `carnet-browser-venv`
+(Playwright), serve production assets, and inject **explicit synthetic API
+fixtures**, never fabricated device results. They cover 320/375/414/768/1440px,
+real Blob downloads with exact byte readback, runtime secret clearing, public
+Settings/protected writes, queued completion, XSS-safe text and no persistence:
 
 ```sh
-python3 -m venv "$TMPDIR/carnet-browser-venv"
-"$TMPDIR/carnet-browser-venv/bin/pip" install playwright
 "$TMPDIR/carnet-browser-venv/bin/python" firmware/tests/web_browser_test.py
 ```
 
-`CHROME` can override `/usr/bin/google-chrome`. The test serves real assets on a
-loopback ephemeral port and injects clearly synthetic API fixtures; it checks
-mobile overflow, button extents, input contrast, focus, 202/pending, recording,
-live text, authorization errors and absence of browser persistence. Screenshots
-are written to `$TMPDIR/carnet-esp32-{width}.png`.
-
-The CMake integration uses IDF's own `data_file_embed_asm.cmake` at configure time:
-PlatformIO 6.11's SCons path does not execute component `EMBED_FILES` custom
-commands. `CMAKE_CONFIGURE_DEPENDS` tracks native CMake inputs, but PlatformIO’s incremental
-SCons build can reuse stale assembly even after editing assets. Clean before the
-fixture build above; `test_web_build_assets.py` compares all generated assembly bytes
-to current source assets. A green incremental compile alone is not sufficient.
-
-**Do not flash the nonfunctional public compile fixture.** No device was flashed
-or real credentials read for these checks. Physical Wi-Fi reconnect, real HTTP
-requests, recorder/SD timing, simultaneous capture and browsing, HTTP task stack
-high-water mark and runtime heap headroom remain hardware checks. Browser fixtures
-and host mutex stress are not proof of real-device behavior.
+Real-handler host tests compile production HTTP handlers and installed IDF cJSON
+with transport/mutex adapters; filesystem tests compile production NoteStore with
+scratch POSIX files and fake SD mounting. This is not real sockets or SD hardware.
+Record/SD/download concurrency, card removal, network loss, HTTP-task stack high
+water and heap headroom, real phone access and physical gauge/QR remain hardware
+checks. Parent verification performs the clean secret-excluding public fixture
+build and embedded-byte check. Never flash that nonfunctional compile fixture.

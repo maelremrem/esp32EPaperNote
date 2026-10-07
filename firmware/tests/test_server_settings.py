@@ -28,6 +28,7 @@ int main() {
  state=AppState::Idle; stopping_recording=true;
  web.queued=true; handleWebCommand(); CHECK(web.result=="rejected"); stopping_recording=false;
  state=AppState::Menu;
+ preview.stopped=false; web.queued=true; handleWebCommand(); CHECK(web.result=="rejected"); preview.stopped=true;
  for(int fail=0;fail<3;++fail) {
    auto prior=network::ApiClient::baseUrl();
    nvs_open_error=fail==0; nvs_set_error=fail==1; nvs_commit_error=fail==2;
@@ -40,7 +41,7 @@ int main() {
  for(auto s:{"bad", "http://127.0.0.1", "http://192.0.2.42", "http://192.0.2.25/path"}) {
    nvs_url=s; loadServerUrl(); CHECK(network::ApiClient::baseUrl()==network::ApiClient::defaultBaseUrl());
  }
- state=AppState::Menu; store.pending={"note"};
+ state=AppState::Menu; sd_mounted=true; store.pending={"note"};
  api.during_transcribe=[&]() { assert(web.snapshots.back().state==AppState::Syncing); };
  syncPending(); CHECK(state==AppState::Menu);
  std::cout << "PASS real main runtime server config/no-SD/menu/busy/NVS failures/reboot fallback\n";

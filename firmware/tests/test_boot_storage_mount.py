@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SD = r'''#pragma once
 #include <cstdio>
 #include <cassert>
+#include <cstdint>
 using esp_err_t = int;
 constexpr int ESP_OK=0, SDMMC_HOST_SLOT_1=1, SDMMC_SLOT_FLAG_INTERNAL_PULLUP=1;
 struct sdmmc_host_t { int slot; };
@@ -21,6 +22,16 @@ inline sdmmc_slot_config_t SDMMC_SLOT_CONFIG_DEFAULT() { return {}; }
 inline bool mount_ok=false, unmount_ok=true;
 inline int mounts=0, unmounts=0, live_mounts=0;
 inline sdmmc_card_t card;
+inline int usage_error=0;
+inline uint64_t usage_total=1000, usage_free=500;
+inline int esp_vfs_fat_info(const char*, uint64_t* t, uint64_t* f) { *t=usage_total; *f=usage_free; return usage_error; }
+inline int formats=0, probes=0;
+inline bool format_ok=true, probe_ok=true;
+inline int sdmmc_get_status(sdmmc_card_t* value) { assert(value==&card); ++probes; return probe_ok ? ESP_OK : -1; }
+inline int esp_vfs_fat_sdcard_format(const char*, sdmmc_card_t* value) {
+    assert(value==&card && live_mounts==1); ++formats;
+    return format_ok ? ESP_OK : -1;
+}
 inline int esp_vfs_fat_sdmmc_mount(const char*, const sdmmc_host_t*, const sdmmc_slot_config_t* slot,
  const esp_vfs_fat_sdmmc_mount_config_t* config, sdmmc_card_t** out) {
     ++mounts; assert(!config->format_if_mount_failed);
@@ -51,10 +62,32 @@ int main(int argc, char** argv) {
     storage::NoteStore store;
     const std::string scenario=argv[1];
     std::filesystem::create_directories(config::SD_MOUNT_POINT);
-    if (scenario=="retry") {
+    if (scenario=="format") {
+        CHECK(!store.format() && formats==0); // Unmounted is never a format request.
+        mount_ok=true; CHECK(store.init());
+        CHECK(store.format() && formats==1 && probes==1 && live_mounts==1);
+        CHECK(std::filesystem::is_directory(config::NOTES_DIR));
+    } else if (scenario=="format-fails" || scenario=="format-removed" || scenario=="format-dir-fails" || scenario=="format-cleanup-fails") {
+        mount_ok=true; CHECK(store.init());
+        format_ok=scenario!="format-fails" && scenario!="format-cleanup-fails";
+        probe_ok=scenario!="format-removed";
+        unmount_ok=scenario!="format-cleanup-fails";
+        if (scenario=="format-dir-fails") {
+            std::filesystem::remove_all(config::NOTES_DIR);
+            std::ofstream(config::NOTES_DIR) << "obstacle";
+        }
+        CHECK(!store.format());
+        CHECK(formats==(probe_ok ? 1 : 0) && unmounts==1 && live_mounts==0);
+        CHECK(store.pendingCount()==0 && !store.commitRecording("unsafe"));
+        CHECK(!store.format() && unmounts==1);
+        if (!unmount_ok) CHECK(!store.init() && mounts==1);
+    } else if (scenario=="retry") {
         CHECK(!store.init() && mounts==1 && live_mounts==0);
+        CHECK(store.lastError().find("mount")!=std::string::npos);
+        CHECK(store.lastError().find("mock SD error")!=std::string::npos);
         mount_ok=true;
         CHECK(store.init() && mounts==2 && live_mounts==1);
+        CHECK(store.lastError().empty());
         std::ofstream(store.recordingTempPath()) << "retained audio";
         CHECK(store.init() && mounts==2 && unmounts==0);
         std::ifstream file(store.recordingTempPath()); std::string content; std::getline(file,content);
@@ -114,7 +147,7 @@ def main():
         subprocess.run(shlex.split(os.environ.get('CXX','g++')) + ['-std=c++17','-Wall','-Wextra','-Werror',
             *shlex.split(os.environ.get('HOST_TEST_FLAGS','')), '-I'+str(d), '-I'+str(ROOT/'firmware/src'),
             str(d/'test.cpp'), str(ROOT/'firmware/src/storage/note_store.cpp'), '-o', str(d/'test')], check=True)
-        for scenario in ('retry','cleanup','cleanup-fails','absent-writes'):
+        for scenario in ('format','format-fails','format-removed','format-dir-fails','format-cleanup-fails','retry','cleanup','cleanup-fails','absent-writes'):
             import shutil
             shutil.rmtree(d/'sdcard', ignore_errors=True)
             subprocess.run([str(d/'test'), scenario],check=True)

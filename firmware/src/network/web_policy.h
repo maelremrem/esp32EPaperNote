@@ -4,11 +4,22 @@
 #include <string>
 namespace network::web {
 enum class State { Idle, Recording, Menu, Syncing };
-enum class Command { Start, Stop, Sync, Configure };
+enum class Command { Start, Stop, Sync, Configure, Wifi, Display, Mount, PrepareFormat, Format, Reconnect, Download };
+struct SettingsWrite {
+    char ssid[2][33]{}, password[2][64]{};
+    bool open[2]{};
+    char server_token[193]{};
+    bool replace_token=false;
+    unsigned partial_limit=10;
+    unsigned challenge=0;
+};
 inline bool allowed(Command command, State state, bool stopping, bool recovery,
                     bool wifi, size_t pending, bool connecting = false) {
     if (connecting) return false;
     switch (command) {
+        case Command::Wifi: case Command::Display: case Command::Mount:
+        case Command::PrepareFormat: case Command::Format: case Command::Reconnect:
+        case Command::Download:
         case Command::Configure: return (state == State::Idle || state == State::Menu) && !stopping;
         case Command::Start: return state == State::Idle && !recovery;
         case Command::Stop: return state == State::Recording && !stopping;
@@ -20,6 +31,16 @@ inline bool allowed(Command command, State state, bool stopping, bool recovery,
 inline bool sameDevice(const std::string &host, const std::string &origin, const std::string &ip) {
     return !ip.empty() && (host == ip || host == ip + ":80") &&
            (origin.empty() || origin == "http://" + ip || origin == "http://" + ip + ":80");
+}
+inline bool validNoteId(const std::string &id) {
+    if(id.empty() || id.size()>96) return false;
+    for(unsigned char c:id) if(!((c>='a'&&c<='z') || (c>='A'&&c<='Z') || (c>='0'&&c<='9') || c=='-' || c=='_')) return false;
+    return true;
+}
+inline bool validServerToken(const std::string &token) {
+    if (token.size()>192) return false;
+    for (unsigned char c:token) if (c<33 || c>126) return false;
+    return true;
 }
 inline bool authenticated(const std::string &header, const std::string &token) {
     if (token.empty() || header.size() != token.size() + 7 || header.compare(0, 7, "Bearer ")) return false;

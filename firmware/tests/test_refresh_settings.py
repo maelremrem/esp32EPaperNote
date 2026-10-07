@@ -8,8 +8,8 @@ int main() {
     try { app_main(); } catch(const std::runtime_error&) {}
     CHECK(epaper.partialRefreshLimit()==10);
     handleButton(app::ButtonEvent::LongPress);
-    for(int i=0;i<6;++i) handleButton(app::ButtonEvent::ShortPress);
-    CHECK(menu_index==6); handleButton(app::ButtonEvent::LongPress);
+    for(int i=0;i<4;++i) handleButton(app::ButtonEvent::ShortPress);
+    CHECK(menu_index==4); handleButton(app::ButtonEvent::LongPress);
     CHECK(ui.screen=="refresh" && ui.selected==10);
     handleButton(app::ButtonEvent::ShortPress); CHECK(ui.selected==20);
     handleButton(app::ButtonEvent::LongPress);
@@ -33,26 +33,28 @@ int main() {
         if(failure<2) {
             loadRefreshInterval(); CHECK(refresh_limit==10);
         }
-        state=AppState::Menu; menu_view=MenuView::Settings; menu_index=6;
+        state=AppState::Menu; menu_view=MenuView::Settings; menu_index=4;
         executeMenuItem(); uint8_t previous=refresh_limit;
         handleButton(app::ButtonEvent::DoublePress);
         if(failure==1) nvs_open_error=1; // Reads failing alone need not prevent a write.
         handleButton(app::ButtonEvent::LongPress);
         CHECK(epaper.partialRefreshLimit()==previous && refresh_limit==previous);
         CHECK(ui.title=="Save failed" && ui.message.find("not saved")!=std::string::npos);
-        handleButton(app::ButtonEvent::LongPress); CHECK(menu_view==MenuView::Settings);
+        handleButton(app::ButtonEvent::LongPress); CHECK(menu_view==MenuView::Refresh);
         nvs_open_error=nvs_set_error=nvs_commit_error=0;
     }
     nvs_get_error=0;
-    state=AppState::Menu; menu_index=6; executeMenuItem();
+    state=AppState::Menu; menu_view=MenuView::Settings; menu_index=4; executeMenuItem();
     auto initial=refresh_option;
     for(size_t i=0;i<sizeof(REFRESH_OPTIONS);++i) handleButton(app::ButtonEvent::ShortPress);
     CHECK(refresh_option==initial);
     handleButton(app::ButtonEvent::LongPress); CHECK(menu_view==MenuView::Settings);
+    handleButton(app::ButtonEvent::ShortPress); CHECK(menu_index==5);
+    handleButton(app::ButtonEvent::ShortPress); CHECK(menu_index==6);
     handleButton(app::ButtonEvent::ShortPress); CHECK(menu_index==0);
     for(size_t i=0;i<display::Ui::MENU_ITEMS;++i) {
         menu_view=MenuView::Settings; menu_index=i; executeMenuItem();
-        CHECK(i==5 ? state==AppState::Idle : true);
+        CHECK(i==6 ? state==AppState::Idle : true);
         state=AppState::Menu;
     }
     std::cout << "PASS real-main defaults, all values, invalid/read/open errors, no-SD BOOT navigation, persistence/set/commit failures, wrap and all menu actions\n";

@@ -21,6 +21,30 @@ inline constexpr uint16_t pixels[][16] = {
 };
 
 inline void draw(EpaperDisplay &display, Icon icon, int x, int y, int scale = 1, bool black = true) {
+    if (scale <= 0) return;
+    if (icon == Icon::Warning) {
+        // Rasterize at the final resolution: magnifying a 16px bitmap makes
+        // 4px stair steps on the large SD warning. The panel remains 1-bit.
+        const int size = 16 * scale;
+        const int top = scale;
+        const int bottom = 14 * scale - 1;
+        const int span = (size - 2) / 2 - scale;
+        const int stroke = scale;
+        for (int row = top; row <= bottom; ++row) {
+            const int half = span * (row - top) / (bottom - top);
+            const int left = (size - 1) / 2 - half;
+            const int right = size - 1 - left;
+            for (int col = left; col <= right; ++col) {
+                const bool outline = col < left + stroke || col > right - stroke ||
+                                     row > bottom - stroke;
+                const bool centre = col >= size / 2 - scale && col < size / 2 + scale;
+                const bool mark = centre && ((row >= 6 * scale && row < 10 * scale) ||
+                                              (row >= 11 * scale && row < 12 * scale));
+                if (outline || mark) display.drawPixel(x + col, y + row, black);
+            }
+        }
+        return;
+    }
     const auto &rows = pixels[static_cast<unsigned>(icon)];
     for (int row = 0; row < 16; ++row)
         for (int col = 0; col < 16; ++col)

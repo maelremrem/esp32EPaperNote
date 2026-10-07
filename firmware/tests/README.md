@@ -1,5 +1,108 @@
 # Firmware live-preview verification
 
+## Staged boot and cooperative synchronization stop
+
+```sh
+python3 firmware/tests/test_boot_wifi.py
+python3 firmware/tests/test_api_runtime.py
+python3 firmware/tests/test_sync_cancel.py
+CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' python3 firmware/tests/test_api_runtime.py
+CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' python3 firmware/tests/test_sync_cancel.py
+```
+
+Boot executes real main and real WifiManager with hardware adapters, including
+mount-before-result ordering, server Checking-before-health ordering, missing
+SD/audio, Wi-Fi association without GOT_IP, fallback/disabled/skipped profiles,
+server failure/unconfigured target, and continued menus. ApiClient executes its
+actual HTTP implementation with installed cJSON and transport adapters: public
+GET /health, bounded timeout/body, exact service/status, lazy model readiness,
+malformed/trailing JSON, redirect/error/init/read/timeout failure, atomic runtime
+targets, cooperative cancellation before/open/upload/headers/read, EAGAIN retry
+and total deadline. Remote bodies/tokens are never returned as diagnostics.
+
+The real-main sync test includes a genuinely separate host HTTP thread: main
+receives LongPress while the worker is blocked, retains the cancelled and later
+WAVs, preserves committed prefix notes, rejects formatting/recording while joining,
+handles cancellation simultaneous with completion and between notes, handles task/
+semaphore allocation failure, pauses the real idle auto-retry loop, permits manual
+retry and completes a web sync as cancelled. FreeRTOS/HTTP adapters are not actual
+radio/socket/storage/e-paper timing evidence. Only the worker owns HTTP cleanup;
+installed ESP-IDF cancel_request reconnects the socket and provides no cross-thread
+safety guarantee, so it is deliberately not used by main.
+
+Actual framebuffer tests verify empty/half/full ring arcs, clamping, status
+truncation/collisions, all per-profile states, Long Cancel and truthful Wait-only
+stopping controls. Run the complete renderer (mandatory QR decode included) and
+export just owned frames with `--preview-boot` as described in `tests/ui/README.md`.
+
+## FatFs long filenames
+
+Run `python3 firmware/tests/test_fatfs_paths.py` with the PlatformIO ESP-IDF package
+installed (or `IDF_PATH` set). This checks both defaults and active sdkconfig, then
+executes real IDF FatFs on a disposable RAM FAT32 disk: the production `recording`
+directory fails with `FR_INVALID_NAME` in 8.3-only mode; heap LFN permits directories,
+long WAV names and `index.jsonl`, preserving data after remount. POSIX-based storage
+harnesses alone do not catch this configuration failure. See [SD.md](SD.md).
+
+## Authenticated web Settings
+
+Run `python3 firmware/tests/test_web_settings.py`,
+`python3 firmware/tests/run_web_server_tests.py`,
+`node firmware/tests/web_settings_test.mjs` and
+`node firmware/tests/web_server_settings_test.mjs`.
+The real-main harness covers display/NVS failures, worker/state guards, retry,
+format TTL/replay/command invalidation/cache clearing and save-before-reconnect.
+Real HTTP handlers use installed IDF cJSON with host HTTP/mutex adapters, including
+strict bounded settings bodies and the shared mailbox. Real Wi-Fi manager tests
+also cover unchanged-password retention, changed-SSID rejection and explicit open.
+See [WEB.md](WEB.md) for Chrome fixture checks and API schemas. Run
+`python3 firmware/tests/build_public_fixture.py` for a clean scratch build excluding
+all private secrets and shared `.pio`, with production hashes and embedded bytes
+verified against the current sources. Never flash its public fixture.
+
+## Settings, provisioning and destructive-format safety
+
+```sh
+python3 firmware/tests/test_settings_submenus.py
+python3 firmware/tests/test_wifi_profiles.py
+python3 firmware/tests/test_wifi_provisioning.py
+python3 firmware/tests/test_boot_storage_mount.py
+CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' python3 firmware/tests/test_settings_submenus.py
+CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' python3 firmware/tests/test_wifi_profiles.py
+CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' python3 firmware/tests/test_wifi_provisioning.py
+CXX=clang++ HOST_TEST_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' python3 firmware/tests/test_boot_storage_mount.py
+```
+
+The submenu harness executes actual `main.cpp` with hardware adapters: logical
+Settings order, offline/real station IP, SSID-only profile information, physical
+portal activation/close/timeout, save failure, Cancel-default formatting, worker
+joins, queued web-command rejection, failed-format readiness and cache invalidation.
+The Wi-Fi profile harness executes actual `WifiManager` with fake NVS/AP transport:
+bounded two-slot blobs, defaults, disabled slots, validation, 32-byte SSID preservation,
+lost IP, corrupt blobs, open/write/commit failure and repeated AP-netif reuse.
+Commit failure is injected even with visible staged NVS data; active profiles must
+remain unchanged until a successful commit.
+
+The provisioning harness executes the real HTTP handlers and DNS worker using a
+threaded host task/semaphore and simulated socket/HTTP transports. It verifies
+actual DNS A response bytes and the complete preserved question, malformed/truncated/
+unsupported/oversized packets, multipart receives of a URL-encoded form, random
+CSRF, literal Host/Origin restrictions, detection redirect, controls/duplicates,
+bounded bodies, mailbox reservation through completion and no HTTP-task NVS writes.
+HTTP/socket/bind/task/AP-IP/cleanup failures must not claim portal readiness.
+These are not real network socket, captive-popup, WPA radio or physical NVS tests.
+
+Storage tests call the real `NoteStore` through fake IDF format/card-status APIs
+and scratch directory fixtures. Normal init is always non-destructive. Formatting
+requires a mounted FAT card; success recreates directories, and absent-card,
+format/directory/unmount failures make storage unavailable without reusing freed
+handles. No real card is formatted or written. Verify physical FAT formatting,
+AP/DNS/DHCP/phone behavior and e-paper/button timing on the ESP32 before deployment.
+
+RED → GREEN tracer runs covered missing real-store formatting, missing main submenu/
+confirmation APIs, the new portal handlers/form, active-profile retention on failed
+commit, 32-byte SSID handling and the physical portal lifetime label.
+
 From the repository root:
 
 ```sh

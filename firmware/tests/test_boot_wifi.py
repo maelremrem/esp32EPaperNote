@@ -28,8 +28,8 @@ inline std::string home_ssid = "home", hotspot_ssid = "hotspot";
 constexpr int ESP_ERR_INVALID_STATE = 3;
 using esp_event_base_t = const char *;
 inline const char *WIFI_EVENT = "wifi", *IP_EVENT = "ip";
-constexpr int WIFI_EVENT_STA_DISCONNECTED = 1, IP_EVENT_STA_GOT_IP = 2, ESP_EVENT_ANY_ID = -1;
-constexpr int WIFI_MODE_STA = 0, WIFI_PS_MIN_MODEM = 0, WIFI_AUTH_WPA2_PSK = 0, WIFI_IF_STA = 0;
+constexpr int WIFI_EVENT_STA_DISCONNECTED = 1, IP_EVENT_STA_GOT_IP = 2, IP_EVENT_STA_LOST_IP = 3, ESP_EVENT_ANY_ID = -1;
+constexpr int WIFI_MODE_STA = 0, WIFI_PS_MIN_MODEM = 0, WIFI_AUTH_WPA2_PSK = 0, WIFI_AUTH_OPEN = 1, WIFI_IF_STA = 0;
 using EventBits_t = unsigned;
 using EventGroupHandle_t = unsigned *;
 constexpr unsigned BIT0 = 1, BIT1 = 2;
@@ -88,7 +88,10 @@ inline void esp_sntp_init() { ++sntp_calls; }
 TEST = r'''
 #define CHECK(c) do { if(!(c)) { std::cerr << __LINE__ << ": " << #c << "\n"; return 1; } } while(0)
 int main(int argc, char **argv) {
-    std::string mode=argc>1 ? argv[1] : "home";
+    std::string scenario=argc>1 ? argv[1] : "home";
+    std::string mode=(scenario=="server-fail" || scenario=="server-unconfigured") ? "home" : scenario;
+    if(scenario=="server-fail") api.health_result=network::HealthStatus::Unavailable;
+    if(scenario=="server-unconfigured") network::ApiClient::token.clear();
     if(mode=="fallback" || mode=="offline" || mode=="association") home_result=0;
     if(mode=="offline") hotspot_result=0;
     if(mode=="association") home_result=hotspot_result=2; // Association only, never GOT_IP.
@@ -123,7 +126,14 @@ int main(int argc, char **argv) {
     store.mount_ok=false; recorder.init_ok=false;
     init_hook=[&]() { assert(!ui.boot_wifi.empty()); assert(ui.boot_wifi.front().home==display::BootWifiStatus::Pending); };
     connect_hook=[&]() { const auto &f=ui.boot_wifi.back(); assert((selected=="home" ? f.home : f.hotspot)==display::BootWifiStatus::Connecting); };
+    store.during_init=[&]() { assert(ui.screen=="boot"); };
+    api.during_health=[&]() { assert(ui.boot_progress.back().completed==3 && ui.boot_progress.back().stage=="Server" && ui.boot_progress.back().detail=="Checking /health"); };
     try { app_main(); } catch(const std::runtime_error &) {}
+    CHECK(api.health_calls==(ok ? 1 : 0));
+    CHECK(ui.boot_progress.size()>=3);
+    CHECK(ui.boot_progress.front().completed==1 && ui.boot_progress.front().detail=="Unavailable. Settings can retry.");
+    CHECK(ui.boot_progress.back().completed==4 && ui.boot_progress.back().stage=="Server");
+    CHECK(ui.boot_progress.back().detail==(!ok ? "Skipped: no Wi-Fi" : scenario=="server-fail" ? "Unavailable. Sync can retry." : scenario=="server-unconfigured" ? "Skipped: not configured" : "Ready"));
     CHECK(ui.boot_wifi.size()==expected.size()+1);
     using U=display::BootWifiStatus;
     CHECK(ui.boot_wifi.front().home==U::Pending && ui.boot_wifi.front().hotspot==U::Pending);
@@ -149,7 +159,7 @@ int main(int argc, char **argv) {
     size_t frames=ui.boot_wifi.size(); reconnectWifi(); CHECK(ui.boot_wifi.size()==frames);
     CHECK(logs.find("fixture-home-password")==std::string::npos && logs.find("fixture-hotspot-password")==std::string::npos);
     if(ok) { handler(nullptr,WIFI_EVENT,WIFI_EVENT_STA_DISCONNECTED,nullptr); CHECK(!wifi.connected()); }
-    std::cout << "PASS " << mode << " real manager + real main boot\n";
+    std::cout << "PASS " << scenario << " real manager + real main boot\n";
 }
 '''
 
@@ -158,6 +168,8 @@ def main():
     mocks=(ROOT/'firmware/tests/stubs/navigation_mocks.h').read_text()
     mocks=re.sub(r'struct WifiManager \{.*?\n\};', '', mocks, flags=re.DOTALL)
     mocks=re.sub(r'enum class WifiAttemptStatus \{[^}]*\};', '', mocks)
+    mocks=re.sub(r'struct WifiProfile[^\n]*\n|using WifiProfiles[^\n]*\n', '', mocks)
+    mocks='#include "network/wifi_manager.h"\n'+mocks
     scratch=Path(os.environ.get('TMPDIR',Path.home()/'.hermes/cache/scratch'))
     scratch.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='boot-wifi-',dir=scratch) as tmp:
@@ -166,7 +178,7 @@ def main():
         (d/'test.cpp').write_text('#include "navigation_mocks.h"\n'+ADAPTERS+strip((ROOT/'firmware/src/network/wifi_manager.cpp').read_text())+strip((ROOT/'firmware/src/main.cpp').read_text())+TEST)
         command=shlex.split(os.environ.get('CXX','g++'))+['-std=c++17','-Wall','-Wextra','-Wno-unused-variable',*shlex.split(os.environ.get('HOST_TEST_FLAGS','')),'-I'+str(d),'-I'+str(ROOT/'firmware/src'),'-I'+str(ROOT/'firmware/include'),str(d/'test.cpp'),'-o',str(d/'test')]
         subprocess.run(command,check=True)
-        for mode in os.environ.get('WIFI_TEST_MODES', 'home fallback offline association disabled empty init-fail race start-fail connect-error').split():
+        for mode in os.environ.get('WIFI_TEST_MODES', 'home fallback offline association disabled empty init-fail race start-fail connect-error server-fail server-unconfigured').split():
             subprocess.run([str(d/'test'),mode],check=True)
 
 if __name__=='__main__':

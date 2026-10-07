@@ -25,6 +25,11 @@ inline sdmmc_slot_config_t SDMMC_SLOT_CONFIG_DEFAULT() { return {}; }
 inline sdmmc_card_t card;
 inline int esp_vfs_fat_sdmmc_mount(const char*, const sdmmc_host_t*, const sdmmc_slot_config_t*, const esp_vfs_fat_sdmmc_mount_config_t*, sdmmc_card_t** out) { *out = &card; return ESP_OK; }
 inline int esp_vfs_fat_sdcard_unmount(const char*, sdmmc_card_t*) { return ESP_OK; }
+inline int sdmmc_get_status(sdmmc_card_t*) { return ESP_OK; }
+inline int usage_error=0;
+inline uint64_t usage_total=1000, usage_free=500;
+inline int esp_vfs_fat_info(const char*, uint64_t* total, uint64_t* free) { *total=usage_total; *free=usage_free; return usage_error; }
+inline int esp_vfs_fat_sdcard_format(const char*, sdmmc_card_t*) { return ESP_OK; }
 inline const char *esp_err_to_name(int) { return "host: no SD mounting"; }
 inline void sdmmc_card_print_info(FILE*, sdmmc_card_t*) {}
 '''

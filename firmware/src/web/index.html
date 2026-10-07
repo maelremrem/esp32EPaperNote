@@ -11,15 +11,11 @@
 <main>
 <section class="connection" aria-labelledby="access-title">
 <div><h1 id="access-title">Your notebook, within reach.</h1><p>Record an idea. Find its words.</p></div>
-<form id="access">
-<label for="token">Access token</label>
-<div class="access-row"><input id="token" type="password" autocomplete="off" spellcheck="false" required maxlength="248" aria-describedby="access-help message"><button id="access-button" type="submit">Connect</button></div>
-<p id="access-help">Your device API token. Kept only in this open page.</p>
-<button id="disconnect" type="button" disabled>Disconnect</button>
-</form>
+<div><div class="settings-actions"><button id="open-access" type="button" aria-haspopup="dialog" aria-controls="access-dialog">Connect / unlock settings</button><button id="disconnect" type="button" disabled>Disconnect</button></div><p class="caption">Authorize access on the device. You can draft the server settings before connecting.</p></div>
 </section>
-<p id="message" class="message" role="status" aria-live="polite">Enter your token to access the device.</p>
-<div class="workbench">
+<p id="message" class="message" role="status" aria-live="polite">Open web settings on the ESP32, then enter its local code.</p>
+<nav class="page-nav" aria-label="Device navigation"><button id="notebook-nav" type="button" aria-pressed="true">Notebook</button><button id="settings-nav" type="button" aria-pressed="false">Settings</button></nav>
+<div id="notebook-panel" class="workbench">
 <section class="recorder" aria-labelledby="record-title">
 <div class="state-line"><span class="indicator" aria-hidden="true"></span><span id="state">Not connected</span></div>
 <h2 id="record-title">An idea to keep?</h2>
@@ -27,25 +23,59 @@
 <p id="hint">The microphone is on the device, not in your browser.</p>
 <dl class="network"><div><dt>Network</dt><dd id="wifi">Not checked</dd></div><div><dt>Local address</dt><dd id="ip">—</dd></div></dl>
 <div class="sync-row"><div><strong id="pending">—</strong><span>notes to transcribe</span></div><button id="sync" type="button" disabled>Synchronize</button></div>
-<p class="caption">Audio stays on the SD card until transcribed.</p>
+<p class="caption">Audio stays on the SD card after transcription or cancellation.</p>
 </section>
 <section class="note" aria-labelledby="note-title">
 <div class="note-head"><h2 id="note-title">Latest note</h2><span>Voice → text</span></div>
 <p id="note-id" class="note-id">No note in this session</p>
 <p id="text" class="transcript">Your next idea starts with a note.</p>
+<h3>Saved on SD</h3><p class="caption">Newest 40 notes. Cancelled audio remains available without a transcript.</p><ul id="note-list" class="note-list"></ul>
 </section>
 </div>
-<section id="server-panel" class="connection" aria-labelledby="server-title" hidden>
+<section id="settings-panel" hidden aria-labelledby="settings-title">
+<h2 id="settings-title">Settings</h2>
+<nav class="settings-links" aria-label="Settings groups"><a href="#wifi-panel">Wi-Fi</a><a href="#server-panel">Transcription server</a><a href="#display-panel">Display</a><a href="#storage-panel">Storage</a></nav>
+<section id="wifi-panel" class="connection" aria-labelledby="wifi-title">
+<div><h2 id="wifi-title">Wi-Fi</h2><p id="station-status">Not checked</p><p id="saved-networks" class="caption"></p><p class="caption">Save up to two networks. Saving does not reconnect: verify the saved names, then choose Reconnect. The address may change.</p><p class="caption">Offline setup: on the device, open Settings → Wi-Fi → Start portal. Portal activation remains physical-only.</p></div>
+<form id="wifi-config" autocomplete="off">
+<fieldset><legend>Home network</legend><label for="home-ssid">SSID (up to 32 bytes)</label><input id="home-ssid" maxlength="32" autocomplete="off" spellcheck="false" disabled>
+<label for="home-password">New password</label><input id="home-password" type="password" maxlength="63" autocomplete="off" disabled>
+<label class="choice"><input id="home-open" type="checkbox" disabled> Use an open network (no password)</label></fieldset>
+<fieldset><legend>Hotspot network</legend><label for="hotspot-ssid">SSID (up to 32 bytes)</label><input id="hotspot-ssid" maxlength="32" autocomplete="off" spellcheck="false" disabled>
+<label for="hotspot-password">New password</label><input id="hotspot-password" type="password" maxlength="63" autocomplete="off" disabled>
+<label class="choice"><input id="hotspot-open" type="checkbox" disabled> Use an open network (no password)</label></fieldset>
+<p class="caption">Blank password keeps the saved password for an unchanged SSID. For a new SSID, enter 8–63 printable ASCII characters or explicitly choose open. Blank SSID disables that slot; keep at least one network. Passwords are never read back.</p>
+<div class="settings-actions"><button id="save-wifi" disabled>Save networks</button><button id="reconnect-wifi" type="button" disabled>Reconnect</button></div>
+</form></section>
+<section id="server-panel" class="connection" aria-labelledby="server-title">
 <div><h2 id="server-title">Transcription server</h2><p>Use the server address, not this device’s address. Saved on the device for live and final transcription.</p></div>
 <form id="server-config">
 <label for="server-url">Server base URL (protocol, IPv4 and port)</label>
-<input id="server-url" type="url" maxlength="63" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.20:8000" required aria-describedby="server-help message" disabled>
-<p id="server-help" class="caption">HTTP sends audio and the token in plaintext: use a trusted LAN only. No path, login, query or fragment. The server must still use the token compiled into the firmware; changing the address does not change it.</p>
+<input id="server-url" type="text" maxlength="63" autocomplete="off" spellcheck="false" placeholder="192.168.1.20:8080" required aria-describedby="server-help message">
+<p id="server-help" class="caption">HTTP sends audio and the token in plaintext: use a trusted LAN only. No path, login, query or fragment. An IPv4 without a port uses HTTP port 8080. An explicit origin preserves its protocol and port.</p>
+<label for="server-token">New transcription server token</label>
+<input id="server-token" type="password" maxlength="192" autocomplete="off" spellcheck="false" aria-describedby="token-help">
+<p id="token-help" class="caption">Write-only. Blank keeps the current token. This is the LXC server token, not your local access code.</p>
+<label class="choice"><input id="clear-server-token" type="checkbox"> Clear the saved transcription token</label>
+<p id="token-state" class="caption"></p>
 <button id="save-server" type="submit" disabled>Save server address</button>
 </form>
 </section>
+<section id="display-panel" class="connection" aria-labelledby="display-title"><div><h2 id="display-title">Display</h2><p>Clean the screen after this many successful partial updates. Changing the limit keeps the accumulated count.</p></div><form id="display-config"><label for="refresh-limit">Full refresh interval</label><select id="refresh-limit" disabled><option value="1">Every partial update</option><option value="5">Every 5 partial updates</option><option value="10">Every 10 partial updates</option><option value="20">Every 20 partial updates</option><option value="50">Every 50 partial updates</option><option value="100">Every 100 partial updates</option><option value="0">Full refresh only</option></select><button id="save-display" disabled>Save display setting</button></form></section>
+<section id="storage-panel" class="connection" aria-labelledby="storage-title"><div><h2 id="storage-title">Storage</h2><p id="storage-status">Not checked</p><p id="storage-error" class="caption"></p><meter id="storage-gauge" min="0" max="1" value="0" hidden aria-label="SD used space"></meter><p id="storage-usage" class="caption">Usage unknown</p><p class="caption">Retry never formats. Erase requires a mounted, responsive FAT card and stopped recording/transcription workers. Unmountable cards need external formatting.</p></div><div><div class="settings-actions"><button id="retry-storage" disabled>Retry mount</button><button id="prepare-format" disabled>Format SD…</button></div><div id="format-confirm" class="format-confirm" hidden role="group" aria-labelledby="format-title"><h3 id="format-title">Erase all SD card data?</h3><p>All audio, transcripts and other card files will be erased. This cannot be undone. Confirmation expires after 60 seconds.</p><div class="settings-actions"><button id="cancel-format" type="button">Cancel</button><button id="erase-storage" type="button" disabled>Erase all data</button></div></div></div></section>
+</section>
 <noscript>Enable JavaScript to view and control the device.</noscript>
 </main>
+<dialog id="access-dialog" aria-labelledby="pin-title" aria-describedby="access-help">
+<div class="dialog-head"><h2 id="pin-title">Unlock your device</h2><button id="close-access" type="button" aria-label="Close access dialog">×</button></div>
+<p id="access-help">On the ESP32, open Settings → Wi-Fi → Open web settings. Enter the six-digit PIN shown on its screen. Access lasts 10 minutes. After 5 incorrect attempts, reopen web settings on the device. This is not your transcription server token.</p>
+<form id="access" autocomplete="off">
+<label for="token">Six-digit PIN</label>
+<input id="token" type="password" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" minlength="6" autocomplete="off" spellcheck="false" required autofocus aria-describedby="access-help access-message">
+<p id="access-message" class="message" role="status" aria-live="polite"></p>
+<div class="settings-actions"><button id="cancel-access" type="button">Cancel</button><button id="access-button" type="submit">Connect</button></div>
+</form>
+</dialog>
 <footer><span>Carnet</span><span>One voice. One record.</span><span>ESP32 / Local Wi-Fi</span></footer>
 </body>
 </html>

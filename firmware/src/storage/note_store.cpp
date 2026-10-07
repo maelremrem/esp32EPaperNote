@@ -6,6 +6,7 @@
 #include <cstring>
 #include <ctime>
 #include <dirent.h>
+#include <fcntl.h>
 #include <memory>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -24,6 +25,17 @@ static const char *TAG = "store";
 static sdmmc_card_t *s_card = nullptr;
 static bool s_ready = false;
 static bool s_cleanup_failed = false;
+static std::string s_error;
+
+std::string NoteStore::lastError() const { return s_error; }
+Usage NoteStore::usage() const {
+    Usage result;
+    uint64_t total=0, free=0;
+    if (s_ready && s_card && !s_cleanup_failed &&
+        esp_vfs_fat_info(config::SD_MOUNT_POINT, &total, &free)==ESP_OK && total && free<=total)
+        result={true,total,free};
+    return result;
+}
 
 static bool mkdirIfMissing(const char *path) {
     if (::mkdir(path, 0775) == 0) return true;
@@ -32,6 +44,7 @@ static bool mkdirIfMissing(const char *path) {
         if (::stat(path, &info) == 0 && S_ISDIR(info.st_mode)) return true;
     }
     ESP_LOGE(TAG, "mkdir(%s) failed: %s", path, std::strerror(errno));
+    s_error = std::string("SD directory setup: ") + std::strerror(errno);
     return false;
 }
 
@@ -43,6 +56,7 @@ static bool releaseUnusableMount() {
     s_card = nullptr;
     if (err != ESP_OK) {
         s_cleanup_failed = true;
+        s_error = std::string("SD cleanup: ") + esp_err_to_name(err) + "; restart required";
         ESP_LOGE(TAG, "SD cleanup failed; reboot required: %s", esp_err_to_name(err));
         return false;
     }
@@ -73,6 +87,8 @@ bool NoteStore::init() {
     sdmmc_card_t *mounted_card = nullptr;
     const esp_err_t err = esp_vfs_fat_sdmmc_mount(config::SD_MOUNT_POINT, &host, &slot, &mount, &mounted_card);
     if (err != ESP_OK) {
+        s_error = std::string("SD mount: ") + esp_err_to_name(err) +
+            "; SDMMC 1-bit CLK39 CMD41 D0=40. Check FAT32 and card contact.";
         ESP_LOGE(TAG, "SD mount failed: %s", esp_err_to_name(err));
         return false;
     }
@@ -81,6 +97,24 @@ bool NoteStore::init() {
     sdmmc_card_print_info(stdout, s_card);
     s_ready = ensureDirectories();
     if (!s_ready) releaseUnusableMount();
+    else s_error.clear();
+    return s_ready;
+}
+
+bool NoteStore::format() {
+    if (!s_ready || !s_card || s_cleanup_failed) return false;
+    s_ready = false;
+    const esp_err_t probe = sdmmc_get_status(s_card);
+    const esp_err_t formatted = probe == ESP_OK
+        ? esp_vfs_fat_sdcard_format(config::SD_MOUNT_POINT, s_card) : probe;
+    if (formatted != ESP_OK) {
+        s_error = std::string(probe == ESP_OK ? "SD format: " : "SD card status: ") + esp_err_to_name(formatted);
+        releaseUnusableMount();
+        return false;
+    }
+    s_ready = ensureDirectories();
+    if (!s_ready) releaseUnusableMount();
+    else s_error.clear();
     return s_ready;
 }
 
@@ -135,11 +169,24 @@ std::string NoteStore::markdownPath(const std::string &id) const {
     return std::string(config::NOTES_DIR) + "/" + id + ".md";
 }
 
+static bool validHistoryId(const std::string &id);
+static bool regularHistoryFile(const std::string &path);
+static bool absentFile(const std::string &path) {
+    struct stat existing{};
+#ifdef ESP_PLATFORM
+    return ::stat(path.c_str(),&existing)!=0 && errno==ENOENT;
+#else
+    return ::lstat(path.c_str(),&existing)!=0 && errno==ENOENT;
+#endif
+}
+
 bool NoteStore::commitRecording(const std::string &id) {
-    if (!s_ready) return false;
+    if (!s_ready || !validHistoryId(id)) return false;
     const std::string src = recordingTempPath();
     const std::string dst = pendingAudioPath(id);
-    ::unlink(dst.c_str());
+    if (!absentFile(dst) || !absentFile(archivedAudioPath(id))) {
+        s_error="Recording ID collision; temporary WAV retained."; return false;
+    }
     if (::rename(src.c_str(), dst.c_str()) != 0) {
         ESP_LOGE(TAG, "rename recording failed: %s", std::strerror(errno));
         return false;
@@ -168,7 +215,8 @@ std::vector<std::string> NoteStore::pendingIds() const {
         std::string name(entry->d_name);
         constexpr const char *suffix = ".wav";
         if (name.size() > 4 && name.compare(name.size() - 4, 4, suffix) == 0) {
-            ids.push_back(name.substr(0, name.size() - 4));
+            const std::string id = name.substr(0, name.size() - 4);
+            if (validHistoryId(id) && regularHistoryFile(pendingAudioPath(id))) ids.push_back(id);
         }
     }
     ::closedir(dir);
@@ -219,6 +267,7 @@ std::vector<SavedNote> NoteStore::savedNotes(size_t limit) const {
                 [](const SavedNote &note, const std::string &value) { return note.id > value; });
             if (at != notes.end() && at->id == id) {
                 at->transcribed = at->transcribed || source == 2;
+                at->audio = at->audio || source != 2;
             } else {
                 // Keep only the current top N while scanning, never all SD entries.
                 const size_t index = static_cast<size_t>(at - notes.begin());
@@ -227,7 +276,7 @@ std::vector<SavedNote> NoteStore::savedNotes(size_t limit) const {
                     notes.pop_back();
                 }
                 at = notes.begin() + index;
-                notes.insert(at, SavedNote{id, source == 2});
+                notes.insert(at, SavedNote{id, source == 2, source != 2});
             }
         }
         ::closedir(dir);
@@ -349,12 +398,57 @@ bool NoteStore::writeTranscript(
     return true;
 }
 
-bool NoteStore::archiveAudio(const std::string &id) {
-    if (!s_ready) return false;
+FILE *NoteStore::openDownload(const std::string &id, bool markdown, uint64_t &bytes) const {
+    bytes=0;
+    if (!s_ready || !validHistoryId(id)) return nullptr;
+    std::string path;
+    if (markdown) {
+        std::string verified;
+        if (!readTranscript(id,verified)) return nullptr; // require generated complete metadata
+        path=markdownPath(id);
+    } else {
+        path=pendingAudioPath(id);
+        if (!regularHistoryFile(path)) path=archivedAudioPath(id);
+    }
+    if (!regularHistoryFile(path)) return nullptr;
+    int flags=O_RDONLY;
+#ifndef ESP_PLATFORM
+    flags|=O_NOFOLLOW;
+#endif
+    const int fd=::open(path.c_str(),flags);
+    if (fd<0) return nullptr;
+    struct stat info{};
+    if (::fstat(fd,&info)!=0 || !S_ISREG(info.st_mode) || info.st_size<0) { ::close(fd); return nullptr; }
+    FILE *file=::fdopen(fd,"rb");
+    if (!file) { ::close(fd); return nullptr; }
+    bytes=static_cast<uint64_t>(info.st_size);
+    return file;
+}
+
+bool NoteStore::archiveAudio(const std::string &id) { return cancelPending(id); }
+
+bool NoteStore::cancelPending(const std::string &id) {
+    if (!s_ready || !validHistoryId(id)) return false;
     const std::string src = pendingAudioPath(id);
     const std::string dst = archivedAudioPath(id);
-    ::unlink(dst.c_str());
-    return ::rename(src.c_str(), dst.c_str()) == 0;
+    if (!regularHistoryFile(src)) return false;
+    struct stat existing{};
+#ifdef ESP_PLATFORM
+    const int found = ::stat(dst.c_str(), &existing);
+#else
+    const int found = ::lstat(dst.c_str(), &existing);
+#endif
+    // All SD mutations are main-owned; no concurrent creator can race this check.
+    if (found == 0 || errno != ENOENT) {
+        s_error = "Archive collision; pending audio retained.";
+        return false;
+    }
+    if (::rename(src.c_str(), dst.c_str()) != 0) {
+        s_error = std::string("Cancel/archive failed: ") + std::strerror(errno);
+        return false;
+    }
+    s_error.clear();
+    return true;
 }
 
 } // namespace storage

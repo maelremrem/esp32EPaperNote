@@ -1,4 +1,5 @@
 #include "storage/note_store.h"
+#include "driver/sdmmc_host.h"
 #include "project_config.h"
 
 #include <cstdlib>
@@ -23,6 +24,38 @@ static void put(const std::string &path, const std::string &body = "wav") {
     std::ofstream file(path, std::ios::binary);
     file << body;
     CHECK(file.good());
+}
+static void cancellation_preserves_audio() {
+    reset();
+    put(store.pendingAudioPath("cancel-me"), "original WAV bytes");
+    CHECK(store.cancelPending("cancel-me"));
+    CHECK(store.pendingCount() == 0);
+    uint64_t bytes=0; FILE *audio=store.openDownload("cancel-me",false,bytes);
+    CHECK(audio && bytes==18); char downloaded[19]{}; CHECK(std::fread(downloaded,1,18,audio)==18); std::fclose(audio);
+    CHECK(std::string(downloaded)=="original WAV bytes");
+    CHECK(!store.openDownload("../outside",false,bytes) && bytes==0);
+    CHECK(!store.openDownload("cancel-me",true,bytes));
+    CHECK(fs::exists(store.archivedAudioPath("cancel-me")));
+    CHECK(!fs::exists(store.markdownPath("cancel-me")));
+    const auto notes=store.savedNotes();
+    CHECK(notes.size()==1 && notes[0].id=="cancel-me" && !notes[0].transcribed);
+    put(store.pendingAudioPath("collision"), "pending original");
+    put(store.archivedAudioPath("collision"), "archive original");
+    CHECK(!store.cancelPending("collision"));
+    fs::create_directories(config::RECORDING_DIR); put(store.recordingTempPath(),"new recording");
+    CHECK(!store.commitRecording("collision"));
+    CHECK(fs::exists(store.recordingTempPath()));
+    CHECK(fs::file_size(store.pendingAudioPath("collision"))==16);
+    CHECK(fs::file_size(store.archivedAudioPath("collision"))==16);
+    CHECK(!store.cancelPending("../outside"));
+    CHECK(!store.cancelPending("missing"));
+    fs::create_directory(store.pendingAudioPath("directory"));
+    CHECK(!store.cancelPending("directory"));
+    fs::create_symlink(store.pendingAudioPath("collision"),store.pendingAudioPath("symlink"));
+    CHECK(!store.cancelPending("symlink"));
+    CHECK(store.pendingIds()==std::vector<std::string>{"collision"});
+    CHECK(!store.openDownload("symlink",false,bytes));
+    CHECK(!store.openDownload("directory",false,bytes));
 }
 static void union_deduplicated_descending() {
     reset();
@@ -149,6 +182,12 @@ static void byte_boundaries_and_bad_large_footer() {
         const std::string expected(size, 'a');
         CHECK(store.writeTranscript("boundary", expected, "en", 1.0, "whistle"));
         CHECK(store.readTranscript("boundary", actual));
+        uint64_t bytes=0; FILE *file=store.openDownload("boundary",true,bytes); CHECK(file);
+        std::string complete; char chunk[1024]; size_t count;
+        while((count=std::fread(chunk,1,sizeof chunk,file))) complete.append(chunk,count);
+        CHECK(!std::ferror(file)); std::fclose(file);
+        CHECK(complete.size()==bytes && bytes==fs::file_size(store.markdownPath("boundary")));
+        CHECK(complete.find(expected)!=std::string::npos && complete.find("- Status: synced\n")!=std::string::npos);
         if (size <= 16000) CHECK(actual == expected);
         else {
             CHECK(actual.size() <= 16384);
@@ -161,6 +200,12 @@ static void byte_boundaries_and_bad_large_footer() {
     CHECK(!store.readTranscript("boundary", actual) && actual.empty());
 }
 int main() {
+    auto usage=store.usage();
+    CHECK(usage.known && usage.total==1000 && usage.free==500);
+    usage_error=1; usage=store.usage(); CHECK(!usage.known && usage.total==0 && usage.free==0);
+    usage_error=0; usage_free=1001; CHECK(!store.usage().known);
+    usage_free=500; usage_total=0; CHECK(!store.usage().known); usage_total=1000;
+    cancellation_preserves_audio();
     union_deduplicated_descending();
     std::cout << "PASS union_deduplicated_descending\n";
     newest_limits();

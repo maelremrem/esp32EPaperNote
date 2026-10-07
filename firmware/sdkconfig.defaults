@@ -8,3 +8,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_ESP_WIFI_SLP_DEFAULT_MIN_ACTIVE_TIME=50
+# Storage directories and note filenames are not limited to FAT 8.3 names.
+# Allocate LFN work buffers on the heap, not the recording task stack.
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_MAX_LFN=255

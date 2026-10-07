@@ -1,9 +1,11 @@
 #include "display/ui.h"
 
 #include <algorithm>
+#include <cmath>
 #include <vector>
 #include "display/text_layout.h"
 #include "display/ui_icons.h"
+#include "display/wifi_qr.h"
 
 namespace display {
 
@@ -40,16 +42,29 @@ void Ui::status(const std::string &label) {
     display_.drawText(8, 152, text::clipped(label, 23));
 }
 
-void Ui::row(int y, icons::Icon icon, const std::string &label, const std::string &value, bool selected) {
+void Ui::scrollbar(int y, int height, size_t total, size_t first, size_t last) {
+    first = std::min(first, total);
+    last = std::min(last, total);
+    if (height < 3 || last <= first || last - first >= total) return;
+    const int inner = height - 2;
+    // Project the actual displayed range, including Back and partial last pages.
+    const int top = std::min(inner - 1, static_cast<int>(std::floor(static_cast<double>(first) / total * inner)));
+    const int bottom = std::min(inner, std::max(top + 1, static_cast<int>(std::ceil(static_cast<double>(last) / total * inner))));
+    display_.drawRect(189, y, 3, height);
+    display_.fillRect(189, y + 1 + top, 3, bottom - top);
+}
+
+void Ui::row(int y, icons::Icon icon, const std::string &label, const std::string &value, bool selected, bool child) {
     if (selected) {
         display_.fillRect(10, y, 174, 20);
         display_.fillRect(8, y + 2, 178, 16);
     }
     icons::draw(display_, icon, 12, y + 2, 1, !selected);
-    const auto right = text::clipped(value, 6);
-    const size_t room = right.empty() ? 18 : 18 - right.size() - 1;
+    const auto right = text::clipped(value, child ? 5 : 6);
+    const size_t room = 18 - (child ? 2 : 0) - (right.empty() ? 0 : right.size() + 1);
     display_.drawText(34, y + 4, text::clipped(label, room), 1, !selected);
-    display_.drawText(180 - static_cast<int>(right.size()) * 8, y + 4, right, 1, !selected);
+    display_.drawText((child ? 164 : 180) - static_cast<int>(right.size()) * 8, y + 4, right, 1, !selected);
+    if (child) display_.drawText(172, y + 4, ">", 1, !selected);
 }
 
 void Ui::wrappedText(int x, int y, int max_chars, int max_lines, const std::string &text) {
@@ -65,12 +80,38 @@ void Ui::wrappedText(int x, int y, int max_chars, int max_lines, const std::stri
     }
 }
 
-void Ui::showBoot() {
+void Ui::bootCircle(size_t completed) {
+    completed = std::min(completed, size_t{4});
+    constexpr double pi = 3.14159265358979323846;
+    for (int y = -33; y <= 33; ++y) {
+        for (int x = -33; x <= 33; ++x) {
+            const int radius2 = x*x + y*y;
+            double angle = std::atan2(static_cast<double>(x), static_cast<double>(-y));
+            if (angle < 0) angle += 2*pi;
+            if ((radius2 >= 32*32 && radius2 < 33*33) ||
+                (radius2 >= 27*27 && radius2 < 31*31 && completed && angle < completed*pi/2))
+                display_.drawPixel(100+x, 78+y);
+        }
+    }
+    icons::draw(display_, icons::Icon::Sync, 92, 56);
+    display_.drawText(88, 82, std::to_string(completed) + "/4");
+}
+
+void Ui::showBootProgress(size_t completed, const std::string &stage, const std::string &detail) {
     display_.clear();
-    display_.drawText(28, 62, "VOICE", 3);
-    display_.drawText(28, 102, "NOTES", 3);
-    display_.drawText(44, 150, "ESP32-S3", 1);
+    header(wifi_, "Starting", icons::Icon::Sync);
+    bootCircle(completed);
+    const auto title = text::clipped(stage, 23);
+    display_.drawText(100-static_cast<int>(title.size())*4, 118, title);
+    wrappedText(8, 138, 23, 2, detail);
+    display_.drawHLine(8, 174, 184);
+    display_.drawText(8, 182, "Settings stay available");
     display_.refresh();
+}
+
+void Ui::showBoot() {
+    sd_ = -1; // No mount result exists yet.
+    showBootProgress(0, "SD card", "Initializing");
 }
 
 void Ui::showBootWifi(BootWifiStatus home, BootWifiStatus hotspot, const std::string &ip) {
@@ -86,16 +127,15 @@ void Ui::showBootWifi(BootWifiStatus home, BootWifiStatus hotspot, const std::st
         return "Unknown";
     };
     display_.clear();
-    display_.drawText(12, 8, "VOICE NOTES", 2);
-    display_.drawText(8, 38, "Starting Wi-Fi");
-    display_.drawHLine(8, 55, 184);
-    display_.drawText(8, 64, "Home Wi-Fi");
-    display_.drawText(24, 82, label(home));
-    display_.drawHLine(8, 104, 184);
-    display_.drawText(8, 114, "Hotspot");
-    display_.drawText(24, 132, label(hotspot));
-    display_.drawHLine(8, 154, 184);
-    if (!ip.empty()) display_.drawText(8, 166, text::clipped("IP " + ip, 23));
+    header(wifi_, "Starting", icons::Icon::Sync);
+    bootCircle(2);
+    display_.drawText(80, 118, "Wi-Fi");
+    display_.drawText(8, 138, "Home Wi-Fi");
+    display_.drawText(96, 138, label(home));
+    display_.drawText(8, 154, "Hotspot");
+    display_.drawText(96, 154, label(hotspot));
+    display_.drawHLine(8, 174, 184);
+    if (!ip.empty()) display_.drawText(8, 182, text::clipped("IP " + ip, 23));
     display_.refresh();
 }
 
@@ -170,24 +210,119 @@ void Ui::showSyncing(size_t current, size_t total, const std::string &note_id) {
     }
     display_.drawText(8, 126, "Sending to transcriber", 1);
     status("Note " + text::clipped(note_id, 18));
+    footer("Wait", "Cancel");
+    display_.refresh();
+}
+
+void Ui::showSyncStopping() {
+    display_.clear();
+    header(wifi_, "Sync", icons::Icon::Sync);
+    display_.drawText(8, 38, "Stopping sync");
+    wrappedText(8, 64, 23, 5, "Waiting for HTTP to stop. Pending audio stays on SD. Server work may finish.");
     footer("Wait", "Wait");
     display_.refresh();
 }
 
 void Ui::showMenu(size_t selected, uint8_t refresh_limit) {
-    static const char *items[] = {"Notes", "Wi-Fi", "Sync", "Storage", "About", "Back", "Full refresh"};
-    static const icons::Icon symbols[] = {icons::Icon::Note, icons::Icon::Wifi, icons::Icon::Sync,
-        icons::Icon::Card, icons::Icon::Info, icons::Icon::Back, icons::Icon::Sync};
-    const std::string values[] = {">", wifi_ < 0 ? "?" : (wifi_ ? "Yes" : "No"), "Auto",
-        sd_ < 0 ? "?" : (sd_ ? "SD" : "No SD"), ">", "", refresh_limit ? std::to_string(refresh_limit) : "Only"};
+    static const char *items[] = {"Notes", "Sync", "Wi-Fi", "Storage", "Full refresh", "About", "Back"};
+    static const icons::Icon symbols[] = {icons::Icon::Note, icons::Icon::Sync, icons::Icon::Wifi,
+        icons::Icon::Card, icons::Icon::Sync, icons::Icon::Info, icons::Icon::Back};
+    const std::string values[] = {"", "Auto", wifi_ < 0 ? "?" : (wifi_ ? "Yes" : "No"),
+        sd_ < 0 ? "?" : (sd_ ? "SD" : "No SD"), refresh_limit ? std::to_string(refresh_limit) : "Only", "", ""};
+    static const bool children[] = {true, true, true, true, true, true, false};
     display_.clear();
     header(wifi_, "Settings", icons::Icon::Gear);
     selected %= MENU_ITEMS;
     // Six rows fit; scroll the seventh above the footer.
     const size_t start = selected >= 6 ? selected - 5 : 0;
     for (size_t i = start; i < std::min(start + 6, MENU_ITEMS); ++i)
-        row(32 + static_cast<int>(i - start) * 21, symbols[i], items[i], values[i], i == selected);
+        row(32 + static_cast<int>(i - start) * 21, symbols[i], items[i], values[i], i == selected, children[i]);
+    scrollbar(32, 126, MENU_ITEMS, start, std::min(start + 6, MENU_ITEMS));
     footer("Next", "Select");
+    display_.refresh();
+}
+
+void Ui::showSubmenu(const std::string &title, const std::vector<std::string> &entries, size_t selected,
+                     const std::vector<bool> &children) {
+    display_.clear();
+    header(wifi_, title, icons::Icon::Gear);
+    if (entries.empty()) {
+        display_.drawText(8, 52, "No options");
+    } else {
+        selected %= entries.size();
+        constexpr size_t visible = 6;
+        const size_t start = selected >= visible ? selected - visible + 1 : 0;
+        const size_t end = std::min(start + visible, entries.size());
+        for (size_t i = start; i < end; ++i)
+            row(32 + static_cast<int>(i - start) * 21, icons::Icon::Back, entries[i], "", i == selected,
+                i < children.size() && children[i]);
+        scrollbar(32, 126, entries.size(), start, end);
+    }
+    footer("Next", "Select");
+    display_.refresh();
+}
+
+void Ui::showCancelConfirmation(bool selected, bool all, const std::string &id) {
+    display_.clear(); header(wifi_,"Cancel sync?",icons::Icon::Sync);
+    if(all) wrappedText(8,36,23,2,"All pending transcriptions");
+    else wrappedText(8,36,23,2,id);
+    wrappedText(8,70,23,2,"Keep audio on SD. No transcript created.");
+    row(112,icons::Icon::Back,"Back","",!selected);
+    row(136,icons::Icon::Mic,"Cancel pending","",selected);
+    footer("Change",selected ? "Cancel" : "Back"); display_.refresh();
+}
+
+void Ui::storageGauge(bool known, uint64_t total, uint64_t free) {
+    known=known && total && free<=total;
+    display_.drawRect(8,114,180,12);
+    if (!known) { display_.drawText(8,136,"Usage unknown"); return; }
+    const uint64_t used=total-free;
+    // Floating projection avoids uint64 multiplication overflow, including huge cards.
+    const int fill=static_cast<int>(176.0L*static_cast<long double>(used)/total);
+    display_.fillRect(10,116,std::min(176,std::max(0,fill)),8);
+    display_.drawText(8,132,text::clipped(std::to_string(used/1048576) + " MiB used",23));
+    display_.drawText(8,146,text::clipped("of " + std::to_string(total/1048576) + " MiB",23));
+}
+void Ui::showStorageMenu(size_t selected, bool known, uint64_t total, uint64_t free) {
+    display_.clear(); header(wifi_,"Storage",icons::Icon::Card);
+    row(32,icons::Icon::Card,"Status / retry mount","",selected%3==0,true);
+    row(53,icons::Icon::Warning,"Format SD","",selected%3==1,true);
+    row(74,icons::Icon::Back,"Back","",selected%3==2,false);
+    storageGauge(known,total,free);
+    footer("Next","Select"); display_.refresh();
+}
+void Ui::showStorageStatus(const std::string &message, bool known, uint64_t total, uint64_t free) {
+    display_.clear(); header(wifi_,"Storage",icons::Icon::Card);
+    wrappedText(8,34,23,5,message);
+    storageGauge(known,total,free);
+    footer("Back","Back"); display_.refresh();
+}
+
+void Ui::showFormatConfirmation(bool erase_selected) {
+    display_.clear();
+    header(wifi_, "Format SD", icons::Icon::Warning);
+    display_.drawText(8, 38, "Erase all card data?");
+    wrappedText(8, 60, 23, 3, "This erases ALL notes and recordings on the card.");
+    row(112, icons::Icon::Back, "Cancel", "", !erase_selected);
+    row(136, icons::Icon::Warning, "Erase SD", "", erase_selected);
+    footer("Change", erase_selected ? "Erase" : "Cancel");
+    display_.refresh();
+}
+
+void Ui::showPortal(const std::string &ssid, const std::string &password, const std::string &address) {
+    display_.clear();
+    header(-1, "Wi-Fi setup", icons::Icon::Wifi);
+    if (!qr::drawWifi(display_, ssid, password)) {
+        display_.drawText(8, 56, "QR unavailable");
+        display_.drawText(8, 74, "Connect manually");
+    }
+    // Keep the complete 32-byte SSID on two rows, without word-wrap changing it.
+    const auto manualSsid = text::ascii(ssid);
+    display_.drawText(8, 120, manualSsid.substr(0, 23));
+    display_.drawText(8, 134, text::clipped(manualSsid.size() > 23 ? manualSsid.substr(23) : "", 23));
+    display_.drawText(8, 148, text::clipped("PW: " + password, 23));
+    display_.drawText(8, 162, text::clipped(address, 23));
+    display_.drawText(8, 184, "Close (10 min)");
     display_.refresh();
 }
 
@@ -219,12 +354,7 @@ void Ui::showSavedNotes(const std::vector<SavedNote> &notes, size_t selected) {
             const auto icon = back ? icons::Icon::Back : (notes[i].transcribed ? icons::Icon::Note : icons::Icon::Mic);
             row(34 + static_cast<int>(i - start) * 24, icon, back ? "Back" : notes[i].id, "", i == selected);
         }
-        // Scroll thumb uses pages, including the Return entry; no invented timestamps.
-        const size_t pages = (notes.size() + visible) / visible;
-        const int thumb = std::max(6, 110 / static_cast<int>(pages));
-        const int offset = pages > 1 ? static_cast<int>((110 - thumb) * (selected / visible) / (pages - 1)) : 0;
-        display_.drawRect(189, 34, 3, 112);
-        display_.fillRect(189, 35 + offset, 3, thumb);
+        scrollbar(34, 112, notes.size() + 1, start, end);
         status(std::to_string(notes.size()) + " notes");
     }
     footer("Next", "Open");

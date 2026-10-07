@@ -6,9 +6,12 @@ idf_component_register(
         "audio/wav_writer.cpp"
         "display/epaper_display.cpp"
         "display/ui.cpp"
+        "display/wifi_qr.cpp"
+        "display/qr/qrcodegen.c"
         "network/api_client.cpp"
         "network/live_preview.cpp"
         "network/wifi_manager.cpp"
+        "network/captive_portal.cpp"
         "network/web_server.cpp"
         "storage/note_store.cpp"
     INCLUDE_DIRS
