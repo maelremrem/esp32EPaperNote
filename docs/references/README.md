@@ -18,3 +18,11 @@ firmware/include/board_pins.h
 ```
 
 Validate the silkscreen on the physical board before flashing a battery-powered build.
+
+## Historical visual references
+
+The PNGs in `../screens/reference/` and `../screens/native_200x200/` are historical
+mockups, not screenshots of the current implementation. Their embedded French
+labels have not been edited or represented as translated. See
+[`../screens/README.md`](../screens/README.md) for the asset inventory and current
+English-render evidence.

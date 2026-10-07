@@ -1,6 +1,8 @@
 #pragma once
 
 #include <string>
+#include <atomic>
+#include "audio/pcm_sink.h"
 
 #include "esp_codec_dev.h"
 #include "driver/i2c_master.h"
@@ -13,11 +15,12 @@ namespace audio {
 class AudioRecorder {
 public:
     bool init();
-    bool start(const std::string &path);
+    bool start(const std::string &path, PcmSink *preview = nullptr);
     void requestStop();
     bool waitStopped(uint32_t timeout_ms);
-    bool isRecording() const { return recording_; }
-    uint32_t recordedBytes() const { return recorded_bytes_; }
+    bool isRecording() const { return recording_.load(); }
+    uint32_t recordedBytes() const { return recorded_bytes_.load(); }
+    bool savedCleanly() const { return saved_cleanly_.load(); }
 
 private:
     static void taskEntry(void *arg);
@@ -29,9 +32,12 @@ private:
     SemaphoreHandle_t finished_sem_ = nullptr;
 
     std::string path_;
-    volatile bool recording_ = false;
-    volatile bool stop_requested_ = false;
-    volatile uint32_t recorded_bytes_ = 0;
+    PcmSink *preview_ = nullptr; // Immutable while task is active; main joins before freeing.
+    bool active_ = false; // Main task only; cleared after completion semaphore is consumed.
+    std::atomic<bool> recording_{false};
+    std::atomic<bool> stop_requested_{false};
+    std::atomic<uint32_t> recorded_bytes_{0};
+    std::atomic<bool> saved_cleanly_{false};
 };
 
 } // namespace audio

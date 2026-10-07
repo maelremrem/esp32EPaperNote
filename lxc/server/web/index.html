@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Carnet — Library</title>
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="masthead">
+    <a class="wordmark" href="/" aria-label="Carnet, library">Carnet<span aria-hidden="true">.</span></a>
+    <p>Words kept.</p>
+    <div class="service"><span id="health" role="status">Service not checked</span><button id="refresh" type="button">Refresh</button></div>
+  </header>
+  <main id="main">
+    <section class="opening"><div><h1>Library</h1><p>Your voice notes, their text and the original recording.</p></div><button id="logout" type="button" hidden>Lock</button></section>
+    <section id="lock" class="lock" aria-labelledby="lock-title">
+      <div class="lock-intro"><h2>Open your notebook.</h2><p>The library stays private. Use your server token to find your notes.</p><p class="quiet">The token stays in memory in this tab. Locking or reloading clears it.</p></div>
+      <form id="login-form">
+        <label for="token">Access token</label>
+        <input id="token" name="token" type="password" required autocomplete="off" spellcheck="false" aria-describedby="login-message">
+        <button id="unlock" class="primary" type="submit">Open library</button>
+        <p id="login-message" class="feedback" role="status">Use HTTPS on a non-private network.</p>
+      </form>
+    </section>
+    <section id="library" class="archive" hidden aria-label="Notes and reader">
+      <aside class="index" aria-labelledby="index-title">
+        <div class="index-heading"><h2 id="index-title">Your notes</h2><span id="count" aria-live="polite"></span></div>
+        <form id="search-form" class="filters">
+          <div><label for="search">Search text or ID</label><input id="search" type="search" maxlength="200" autocomplete="off" placeholder="A word, an idea…"></div>
+          <div class="filter-row"><div><label for="status">Status</label><select id="status"><option value="">All statuses</option><option value="done">Transcribed</option><option value="processing">Processing</option><option value="error">Failed</option></select></div><button type="submit">Search</button></div>
+        </form>
+        <p id="list-message" class="feedback" role="status"></p>
+        <ol id="notes" class="notes"></ol>
+        <nav class="pagination" aria-label="Note pages"><button id="previous" type="button" disabled>Previous</button><span id="page"></span><button id="next" type="button" disabled>Next</button></nav>
+      </aside>
+      <article id="reader" class="reader" aria-labelledby="reader-title">
+        <div id="reader-empty" class="reader-empty"><span class="page-mark" aria-hidden="true"></span><h2>A note to revisit.</h2><p>Choose a note from the list to read its transcript and listen to the original voice.</p></div>
+        <div id="note-content" hidden>
+          <p id="note-status" class="note-status"></p><h2 id="reader-title" tabindex="-1"></h2><p id="metadata" class="quiet"></p>
+          <div class="text-actions"><button id="copy" type="button">Copy text</button><button id="download-text" type="button">Export as .txt</button></div>
+          <p id="detail-message" class="feedback" role="status"></p>
+          <div id="transcript" class="transcript"></div>
+          <section class="recording" aria-labelledby="audio-title"><h3 id="audio-title">The original voice</h3><div class="audio-actions"><button id="load-audio" type="button">Load audio</button><a id="download-audio" class="button" hidden>Download WAV</a></div><audio id="audio" controls preload="none" hidden aria-label="Note recording"></audio><p id="audio-message" class="feedback" role="status">Audio is loaded on demand using your token.</p></section>
+        </div>
+      </article>
+    </section>
+    <noscript><p>Enable JavaScript to open the library. Notes are not included in this page.</p></noscript>
+  </main>
+  <footer><span>Carnet</span><p>A personal space. Automatic transcripts may contain errors.</p></footer>
+</body>
+</html>

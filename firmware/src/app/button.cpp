@@ -37,6 +37,7 @@ void Button::taskEntry(void *arg) {
 void Button::task() {
     bool last_raw = gpio_get_level(board::APP_BUTTON) != 0;
     bool stable = last_raw;
+    bool ignore_until_release = !stable;
     int64_t last_change_us = esp_timer_get_time();
     int64_t press_start_us = 0;
     int64_t first_click_us = 0;
@@ -53,6 +54,12 @@ void Button::task() {
 
         if (raw != stable && (now - last_change_us) / 1000 >= config::BUTTON_DEBOUNCE_MS) {
             stable = raw;
+            // BOOT can still be held after flashing. Its first release is not a click.
+            if (ignore_until_release) {
+                if (stable) ignore_until_release = false;
+                vTaskDelay(pdMS_TO_TICKS(10));
+                continue;
+            }
             if (!stable) {
                 press_start_us = now;
                 long_sent = false;

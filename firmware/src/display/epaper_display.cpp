@@ -5,6 +5,8 @@
 
 #include "board_pins.h"
 #include "display/font8x12.h"
+#include "display/epaper_waveforms.h"
+#include "display/text_layout.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -38,7 +40,7 @@ bool EpaperDisplay::init() {
         return false;
     }
 
-    gpio_set_level(board::EPD_PWR, 1);
+    gpio_set_level(board::EPD_PWR, 0); // V2 supply enable is active LOW.
     gpio_set_level(board::EPD_CS, 1);
     vTaskDelay(pdMS_TO_TICKS(20));
 
@@ -68,24 +70,29 @@ bool EpaperDisplay::init() {
     hardwareReset();
     controllerInit();
     clear();
-    return true;
+    reference_valid_ = false;
+    partial_count_ = 0;
+    needs_reset_ = !io_ok_;
+    return io_ok_;
 }
 
 void EpaperDisplay::hardwareReset() {
     gpio_set_level(board::EPD_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(50));
     gpio_set_level(board::EPD_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(board::EPD_RST, 1);
     vTaskDelay(pdMS_TO_TICKS(20));
+    gpio_set_level(board::EPD_RST, 1);
+    vTaskDelay(pdMS_TO_TICKS(50));
 }
 
 bool EpaperDisplay::waitBusy(uint32_t timeout_ms) {
+    if (!io_ok_) return false;
     const int64_t deadline = esp_timer_get_time() + static_cast<int64_t>(timeout_ms) * 1000;
     // Waveshare V2 examples use HIGH = busy, LOW = idle.
     while (gpio_get_level(board::EPD_BUSY) == 1) {
         if (esp_timer_get_time() > deadline) {
             ESP_LOGW(TAG, "BUSY timeout");
+            io_ok_ = false;
             return false;
         }
         vTaskDelay(pdMS_TO_TICKS(5));
@@ -94,6 +101,7 @@ bool EpaperDisplay::waitBusy(uint32_t timeout_ms) {
 }
 
 void EpaperDisplay::controllerInit() {
+    if (!waitBusy()) return;
     sendCommand(0x12); // software reset
     waitBusy();
 
@@ -116,10 +124,14 @@ void EpaperDisplay::controllerInit() {
     sendData(0x00);
 
     sendCommand(0x3C); // border waveform
-    sendData(0x05);
+    sendData(0x01);
 
     sendCommand(0x18); // use internal temperature sensor
     sendData(0x80);
+    sendCommand(0x22); // vendor temperature/waveform loading preparation
+    sendData(0xB1);
+    sendCommand(0x20);
+    waitBusy();
 
     sendCommand(0x4E);
     sendData(0x00);
@@ -129,33 +141,49 @@ void EpaperDisplay::controllerInit() {
     waitBusy();
 }
 
+void EpaperDisplay::loadLut(const uint8_t *lut) {
+    sendCommand(0x32);
+    sendBuffer(lut, 153);
+    waitBusy();
+    sendCommand(0x3F); sendData(lut[153]);
+    sendCommand(0x03); sendData(lut[154]);
+    sendCommand(0x04); sendBuffer(lut + 155, 3);
+    sendCommand(0x2C); sendData(lut[158]);
+}
+
 void EpaperDisplay::sendCommand(uint8_t value) {
+    if (!io_ok_ || !spi_) return;
     gpio_set_level(board::EPD_DC, 0);
     gpio_set_level(board::EPD_CS, 0);
     spi_transaction_t t{};
     t.length = 8;
     t.tx_buffer = &value;
-    spi_device_polling_transmit(spi_, &t);
+    io_ok_ = spi_device_polling_transmit(spi_, &t) == ESP_OK;
+    if (!io_ok_) ESP_LOGE(TAG, "SPI transfer failed");
     gpio_set_level(board::EPD_CS, 1);
 }
 
 void EpaperDisplay::sendData(uint8_t value) {
+    if (!io_ok_ || !spi_) return;
     gpio_set_level(board::EPD_DC, 1);
     gpio_set_level(board::EPD_CS, 0);
     spi_transaction_t t{};
     t.length = 8;
     t.tx_buffer = &value;
-    spi_device_polling_transmit(spi_, &t);
+    io_ok_ = spi_device_polling_transmit(spi_, &t) == ESP_OK;
+    if (!io_ok_) ESP_LOGE(TAG, "SPI transfer failed");
     gpio_set_level(board::EPD_CS, 1);
 }
 
 void EpaperDisplay::sendBuffer(const uint8_t *data, size_t len) {
+    if (!io_ok_ || !spi_) return;
     gpio_set_level(board::EPD_DC, 1);
     gpio_set_level(board::EPD_CS, 0);
     spi_transaction_t t{};
     t.length = len * 8;
     t.tx_buffer = data;
-    spi_device_polling_transmit(spi_, &t);
+    io_ok_ = spi_device_polling_transmit(spi_, &t) == ESP_OK;
+    if (!io_ok_) ESP_LOGE(TAG, "SPI transfer failed");
     gpio_set_level(board::EPD_CS, 1);
 }
 
@@ -196,35 +224,19 @@ void EpaperDisplay::fillRect(int x, int y, int w, int h, bool black) {
 }
 
 char EpaperDisplay::transliterateUtf8(const char *&p) const {
-    const auto c0 = static_cast<unsigned char>(*p);
-    if (c0 < 0x80) {
-        return *p++;
-    }
-    if (c0 == 0xC3 && p[1]) {
-        const auto c1 = static_cast<unsigned char>(p[1]);
-        p += 2;
-        switch (c1) {
-            case 0xA0: case 0xA2: case 0xA4: return 'a';
-            case 0xA7: return 'c';
-            case 0xA8: case 0xA9: case 0xAA: case 0xAB: return 'e';
-            case 0xAE: case 0xAF: return 'i';
-            case 0xB4: case 0xB6: return 'o';
-            case 0xB9: case 0xBB: case 0xBC: return 'u';
-            case 0x80: case 0x82: case 0x84: return 'A';
-            case 0x87: return 'C';
-            case 0x88: case 0x89: case 0x8A: case 0x8B: return 'E';
-            default: return '?';
-        }
-    }
-    ++p;
-    return '?';
+    return text::nextGlyph(p);
 }
 
 void EpaperDisplay::drawText(int x, int y, const std::string &text, int scale, bool black) {
+    // Never paint half a glyph. UI callers pre-wrap to their own content box;
+    // legacy callers retain implicit panel-width wrapping below.
+    if (scale <= 0 || scale > width() / font::WIDTH || x < 0 || y < 0 ||
+        x > width() - font::WIDTH * scale) return;
     const char *p = text.c_str();
     int cursor_x = x;
     int cursor_y = y;
     while (*p) {
+        if (cursor_y > height() - font::HEIGHT * scale) break;
         char c = transliterateUtf8(p);
         if (c == '\n') {
             cursor_x = x;
@@ -234,8 +246,13 @@ void EpaperDisplay::drawText(int x, int y, const std::string &text, int scale, b
         if (c < 32 || c > 126) c = '?';
         const auto &glyph = font::GLYPHS[static_cast<unsigned char>(c) - 32];
         for (int gy = 0; gy < font::HEIGHT; ++gy) {
+            // Thicken inside the existing 8x12 cell, retaining every original bit.
+            // The rightmost column expands inward instead of spilling into the
+            // next glyph. Paint only foreground, equally for black and white.
+            const uint8_t ink = static_cast<uint8_t>(glyph[gy] | (glyph[gy] >> 1) |
+                                                     ((glyph[gy] & 1) << 1));
             for (int gx = 0; gx < font::WIDTH; ++gx) {
-                if (glyph[gy] & (0x80 >> gx)) {
+                if (ink & (0x80 >> gx)) {
                     fillRect(cursor_x + gx * scale, cursor_y + gy * scale, scale, scale, black);
                 }
             }
@@ -250,26 +267,82 @@ void EpaperDisplay::drawText(int x, int y, const std::string &text, int scale, b
 }
 
 void EpaperDisplay::refresh() {
+    (void)refresh(false);
+}
+
+bool EpaperDisplay::refresh(bool force_full) {
+    if (!spi_) return false;
+    if (!force_full && reference_valid_ && std::memcmp(previous_, framebuffer_, sizeof(previous_)) == 0) return true;
+    const bool partial = !force_full && reference_valid_ && partial_count_ < partial_limit_;
+    reference_valid_ = false; // Commit only after every transfer and activation completes.
+    io_ok_ = true;
+    if (needs_reset_) {
+        gpio_set_level(board::EPD_PWR, 0); // Restore the active-LOW supply after sleep.
+        vTaskDelay(pdMS_TO_TICKS(20));
+        hardwareReset();
+        needs_reset_ = false;
+    }
+    if (partial) {
+        // The vendor partial reset preserves RAM. Never issue SWRESET here.
+        hardwareReset();
+        waitBusy();
+        loadLut(waveform::PARTIAL);
+        const uint8_t options[] = {0, 0, 0, 0, 0, 0x40, 0, 0, 0, 0};
+        sendCommand(0x37); sendBuffer(options, sizeof(options));
+        sendCommand(0x3C); sendData(0x80);
+        sendCommand(0x22); sendData(0xC0);
+        sendCommand(0x20); waitBusy();
+        // Retain the known-working framebuffer orientation after hardware reset.
+        sendCommand(0x11); sendData(0x03);
+        sendCommand(0x44); sendData(0x00); sendData(0x18);
+        sendCommand(0x45); sendData(0x00); sendData(0x00); sendData(0xC7); sendData(0x00);
+    } else {
+        controllerInit(); // restore full border, addressing and controller settings
+        loadLut(waveform::FULL);
+    }
     sendCommand(0x4E);
     sendData(0x00);
     sendCommand(0x4F);
     sendData(0x00);
     sendData(0x00);
 
+    if (partial) {
+        // Explicitly seed old RAM on each update, independent of ping-pong copying.
+        sendCommand(0x26);
+        sendBuffer(previous_, sizeof(previous_));
+        sendCommand(0x4E); sendData(0x00);
+        sendCommand(0x4F); sendData(0x00); sendData(0x00);
+    }
     sendCommand(0x24);
     sendBuffer(framebuffer_, sizeof(framebuffer_));
+    if (!partial) {
+        sendCommand(0x4E); sendData(0x00);
+        sendCommand(0x4F); sendData(0x00); sendData(0x00);
+        sendCommand(0x26);
+        sendBuffer(framebuffer_, sizeof(framebuffer_));
+    }
 
     sendCommand(0x22);
-    sendData(0xF7); // full update using controller waveform/temperature settings
+    sendData(partial ? 0xCF : 0xC7);
     sendCommand(0x20);
-    waitBusy(8000);
+    if (!waitBusy(8000) || !io_ok_) {
+        needs_reset_ = true;
+        return false;
+    }
+    std::memcpy(previous_, framebuffer_, sizeof(previous_));
+    reference_valid_ = true;
+    partial_count_ = partial ? partial_count_ + 1 : 0;
+    return true;
 }
 
 void EpaperDisplay::sleep() {
+    reference_valid_ = false;
+    needs_reset_ = true;
+    partial_count_ = 0;
     sendCommand(0x10);
     sendData(0x01);
     vTaskDelay(pdMS_TO_TICKS(20));
-    gpio_set_level(board::EPD_PWR, 0);
+    gpio_set_level(board::EPD_PWR, 1); // V2 supply disable is HIGH.
 }
 
 } // namespace display

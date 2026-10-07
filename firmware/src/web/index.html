@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Carnet · Device</title>
+<link rel="stylesheet" href="/tokens.css"><link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header><a class="brand" href="/" aria-label="Carnet, home"><span class="mark" aria-hidden="true"></span>Carnet</a><span class="device">Local device</span></header>
+<main>
+<section class="connection" aria-labelledby="access-title">
+<div><h1 id="access-title">Your notebook, within reach.</h1><p>Record an idea. Find its words.</p></div>
+<form id="access">
+<label for="token">Access token</label>
+<div class="access-row"><input id="token" type="password" autocomplete="off" spellcheck="false" required maxlength="248" aria-describedby="access-help message"><button id="access-button" type="submit">Connect</button></div>
+<p id="access-help">Your device API token. Kept only in this open page.</p>
+<button id="disconnect" type="button" disabled>Disconnect</button>
+</form>
+</section>
+<p id="message" class="message" role="status" aria-live="polite">Enter your token to access the device.</p>
+<div class="workbench">
+<section class="recorder" aria-labelledby="record-title">
+<div class="state-line"><span class="indicator" aria-hidden="true"></span><span id="state">Not connected</span></div>
+<h2 id="record-title">An idea to keep?</h2>
+<button id="record" class="record" type="button" disabled>Record</button>
+<p id="hint">The microphone is on the device, not in your browser.</p>
+<dl class="network"><div><dt>Network</dt><dd id="wifi">Not checked</dd></div><div><dt>Local address</dt><dd id="ip">—</dd></div></dl>
+<div class="sync-row"><div><strong id="pending">—</strong><span>notes to transcribe</span></div><button id="sync" type="button" disabled>Synchronize</button></div>
+<p class="caption">Audio stays on the SD card until transcribed.</p>
+</section>
+<section class="note" aria-labelledby="note-title">
+<div class="note-head"><h2 id="note-title">Latest note</h2><span>Voice → text</span></div>
+<p id="note-id" class="note-id">No note in this session</p>
+<p id="text" class="transcript">Your next idea starts with a note.</p>
+</section>
+</div>
+<section id="server-panel" class="connection" aria-labelledby="server-title" hidden>
+<div><h2 id="server-title">Transcription server</h2><p>Use the server address, not this device’s address. Saved on the device for live and final transcription.</p></div>
+<form id="server-config">
+<label for="server-url">Server base URL (protocol, IPv4 and port)</label>
+<input id="server-url" type="url" maxlength="63" autocomplete="off" spellcheck="false" placeholder="http://192.168.1.20:8000" required aria-describedby="server-help message" disabled>
+<p id="server-help" class="caption">HTTP sends audio and the token in plaintext: use a trusted LAN only. No path, login, query or fragment. The server must still use the token compiled into the firmware; changing the address does not change it.</p>
+<button id="save-server" type="submit" disabled>Save server address</button>
+</form>
+</section>
+<noscript>Enable JavaScript to view and control the device.</noscript>
+</main>
+<footer><span>Carnet</span><span>One voice. One record.</span><span>ESP32 / Local Wi-Fi</span></footer>
+</body>
+</html>

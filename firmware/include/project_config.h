@@ -23,6 +23,16 @@ constexpr uint32_t SYNC_RETRY_MS = 30000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 180000;
 constexpr size_t HTTP_RESPONSE_MAX = 8192;
 
+// Best-effort, RAM-only live PCM. WAV capture never waits for preview transport.
+constexpr size_t LIVE_QUEUE_CHUNKS = 16;
+constexpr size_t LIVE_WINDOW_BYTES = AUDIO_READ_CHUNK * 64; // 4.096 s at 16 kHz mono s16le
+constexpr uint32_t LIVE_HTTP_TIMEOUT_MS = 2000;
+constexpr uint32_t LIVE_REQUEST_DEADLINE_MS = 8000;
+constexpr size_t LIVE_TEXT_MAX = 4096;
+static_assert(LIVE_WINDOW_BYTES <= AUDIO_SAMPLE_RATE * 2 * 30, "Live window exceeds 30 s");
+static_assert(AUDIO_SAMPLE_RATE == 16000 && AUDIO_BITS == 16 && AUDIO_CHANNELS == 1,
+              "Live API requires s16le mono 16000 Hz");
+
 constexpr char SD_MOUNT_POINT[] = "/sdcard";
 constexpr char RECORDING_DIR[] = "/sdcard/audio/recording";
 constexpr char PENDING_DIR[] = "/sdcard/audio/pending";

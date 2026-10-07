@@ -1,0 +1,24 @@
+:root {
+  --color-paper: oklch(100% 0 0);
+  --color-wash: oklch(97% 0 0);
+  --color-ink: oklch(0% 0 0);
+  --color-muted: oklch(43% 0 0);
+  --color-rule: oklch(82% 0 0);
+  --color-accent: var(--color-ink);
+  --color-accent-ink: var(--color-paper);
+  --color-focus: oklch(60% 0 0);
+  --font-body: 'Trebuchet MS', 'Segoe UI', sans-serif;
+  --font-display: var(--font-body);
+  --font-note: 'Palatino Linotype', 'Book Antiqua', Palatino, Georgia, serif;
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --text-sm: .8125rem;
+  --text-body: 1rem;
+  --text-note: 1.25rem;
+  --text-title: 1.5625rem;
+  --radius-control: 6px;
+}

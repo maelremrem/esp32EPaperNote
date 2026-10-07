@@ -1,5 +1,5 @@
 [Unit]
-Description=ESP32 Voice Notes Whisper API
+Description=ESP32 Voice Notes Whistle API
 After=network-online.target
 Wants=network-online.target
 
@@ -9,6 +9,10 @@ User=voicenotes
 Group=voicenotes
 WorkingDirectory=/opt/voice-notes/server
 EnvironmentFile=/etc/voice-notes.env
+Environment=HOME=/var/lib/voice-notes
+Environment=HF_HOME=/var/lib/voice-notes/.cache/huggingface
+Environment=NEEDLE_TELEMETRY=0
+Environment=DO_NOT_TRACK=1
 ExecStart=/opt/voice-notes/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8080 --workers 1
 Restart=on-failure
 RestartSec=5

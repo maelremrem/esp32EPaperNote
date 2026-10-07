@@ -24,7 +24,7 @@ bool AudioRecorder::init() {
     power.pull_down_en = GPIO_PULLDOWN_DISABLE;
     power.intr_type = GPIO_INTR_DISABLE;
     ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_config(&power));
-    gpio_set_level(board::AUDIO_PWR, 1);
+    gpio_set_level(board::AUDIO_PWR, 0); // V2 supply enable is active LOW.
     vTaskDelay(pdMS_TO_TICKS(30));
 
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(board::I2S_PORT, I2S_ROLE_MASTER);
@@ -125,19 +125,23 @@ bool AudioRecorder::init() {
     return finished_sem_ != nullptr;
 }
 
-bool AudioRecorder::start(const std::string &path) {
-    if (recording_ || !codec_ || !finished_sem_) {
+bool AudioRecorder::start(const std::string &path, PcmSink *preview) {
+    if (active_ || !codec_ || !finished_sem_) {
         return false;
     }
     path_ = path;
+    preview_ = preview;
+    active_ = true;
     stop_requested_ = false;
     recorded_bytes_ = 0;
+    saved_cleanly_ = false;
     recording_ = true;
 
     while (xSemaphoreTake(finished_sem_, 0) == pdTRUE) {}
 
     if (xTaskCreate(taskEntry, "record_audio", 6144, this, 8, nullptr) != pdPASS) {
         recording_ = false;
+        active_ = false;
         return false;
     }
     return true;
@@ -148,10 +152,13 @@ void AudioRecorder::requestStop() {
 }
 
 bool AudioRecorder::waitStopped(uint32_t timeout_ms) {
-    if (!recording_) {
+    if (!active_) {
         return true;
     }
-    return xSemaphoreTake(finished_sem_, pdMS_TO_TICKS(timeout_ms)) == pdTRUE;
+    if (xSemaphoreTake(finished_sem_, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) return false;
+    active_ = false;
+    preview_ = nullptr;
+    return true;
 }
 
 void AudioRecorder::taskEntry(void *arg) {
@@ -168,8 +175,8 @@ void AudioRecorder::recordTask() {
         return;
     }
 
-    writeWavHeader(file, 0, config::AUDIO_SAMPLE_RATE, config::AUDIO_CHANNELS, config::AUDIO_BITS);
-    std::fseek(file, 44, SEEK_SET);
+    bool wav_ok = writeWavHeader(file, 0, config::AUDIO_SAMPLE_RATE, config::AUDIO_CHANNELS, config::AUDIO_BITS);
+    if (std::fseek(file, 44, SEEK_SET) != 0) wav_ok = false;
 
     alignas(4) uint8_t buffer[config::AUDIO_READ_CHUNK];
     while (!stop_requested_) {
@@ -183,18 +190,22 @@ void AudioRecorder::recordTask() {
         recorded_bytes_ += static_cast<uint32_t>(written);
         if (written != sizeof(buffer)) {
             ESP_LOGE(TAG, "SD write failed during recording");
+            wav_ok = false;
             break;
         }
+        if (preview_) preview_->tryPush(buffer, written);
     }
 
-    writeWavHeader(file, recorded_bytes_, config::AUDIO_SAMPLE_RATE, config::AUDIO_CHANNELS, config::AUDIO_BITS);
-    std::fflush(file);
-    fsync(fileno(file));
-    std::fclose(file);
+    if (!writeWavHeader(file, recorded_bytes_.load(), config::AUDIO_SAMPLE_RATE,
+                        config::AUDIO_CHANNELS, config::AUDIO_BITS)) wav_ok = false;
+    if (std::fflush(file) != 0) wav_ok = false;
+    if (fsync(fileno(file)) != 0) wav_ok = false;
+    if (std::fclose(file) != 0) wav_ok = false;
+    saved_cleanly_ = wav_ok;
 
     recording_ = false;
     stop_requested_ = false;
-    ESP_LOGI(TAG, "Recording complete: %lu PCM bytes", static_cast<unsigned long>(recorded_bytes_));
+    ESP_LOGI(TAG, "Recording complete: %lu PCM bytes", static_cast<unsigned long>(recorded_bytes_.load()));
     xSemaphoreGive(finished_sem_);
 }
 

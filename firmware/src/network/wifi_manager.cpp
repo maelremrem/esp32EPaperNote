@@ -17,13 +17,13 @@ namespace network {
 static const char *TAG = "wifi";
 static EventGroupHandle_t s_events = nullptr;
 static constexpr EventBits_t GOT_IP = BIT0;
-static constexpr EventBits_t DISCONNECTED = BIT1;
+
 static bool s_sntp_started = false;
 
 static void eventHandler(void *, esp_event_base_t base, int32_t id, void *data) {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         if (s_events) {
-            xEventGroupSetBits(s_events, DISCONNECTED);
+            xEventGroupClearBits(s_events, GOT_IP);
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         auto *event = static_cast<ip_event_got_ip_t *>(data);
@@ -39,7 +39,7 @@ bool WifiManager::init() {
         return true;
     }
 
-    ESP_ERROR_CHECK(esp_netif_init());
+    if (esp_netif_init() != ESP_OK) return false;
     const esp_err_t loop_err = esp_event_loop_create_default();
     if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) {
         return false;
@@ -47,12 +47,12 @@ bool WifiManager::init() {
     esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &eventHandler, nullptr));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &eventHandler, nullptr));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_MIN_MODEM));
-    ESP_ERROR_CHECK(esp_wifi_start());
+    if (esp_wifi_init(&cfg) != ESP_OK) return false;
+    if (esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, &eventHandler, nullptr) != ESP_OK) return false;
+    if (esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, &eventHandler, nullptr) != ESP_OK) return false;
+    if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return false;
+    if (esp_wifi_set_ps(WIFI_PS_MIN_MODEM) != ESP_OK) return false;
+    if (esp_wifi_start() != ESP_OK) return false;
 
     s_events = xEventGroupCreate();
     initialized_ = s_events != nullptr;
@@ -72,15 +72,17 @@ bool WifiManager::connectOne(const char *ssid, const char *password, uint32_t ti
     cfg.sta.pmf_cfg.required = false;
 
     esp_wifi_disconnect();
-    xEventGroupClearBits(s_events, GOT_IP | DISCONNECTED);
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
+    xEventGroupClearBits(s_events, GOT_IP);
+    if (esp_wifi_set_config(WIFI_IF_STA, &cfg) != ESP_OK) return false;
     ESP_LOGI(TAG, "Connecting to %s", ssid);
-    ESP_ERROR_CHECK(esp_wifi_connect());
+    if (esp_wifi_connect() != ESP_OK) return false;
 
+    // Intentional disconnect events can arrive after switching SSIDs. They must
+    // not terminate the new attempt: only GOT_IP or its timeout is decisive.
     const EventBits_t bits = xEventGroupWaitBits(
         s_events,
-        GOT_IP | DISCONNECTED,
-        pdTRUE,
+        GOT_IP,
+        pdFALSE,
         pdFALSE,
         pdMS_TO_TICKS(timeout_ms)
     );
@@ -91,25 +93,36 @@ bool WifiManager::connectOne(const char *ssid, const char *password, uint32_t ti
     return false;
 }
 
-bool WifiManager::connectPreferred() {
-    if (!initialized_ && !init()) {
-        return false;
+bool WifiManager::connectPreferred(WifiProgressCallback progress) {
+    const char *ssids[] = {WIFI_HOME_SSID, WIFI_IPHONE_SSID};
+    const char *passwords[] = {WIFI_HOME_PASSWORD, WIFI_IPHONE_PASSWORD};
+    const auto report = [&](size_t index, WifiAttemptStatus status, const std::string &ip = {}) {
+        if (progress) progress(index, status, ip);
+    };
+    const bool ready = initialized_ || init();
+    bool success = false;
+    for (size_t i = 0; i < 2; ++i) {
+        if (!ssids[i] || !ssids[i][0]) {
+            report(i, WifiAttemptStatus::Disabled);
+        } else if (success) {
+            report(i, WifiAttemptStatus::Skipped);
+        } else if (!ready) {
+            report(i, WifiAttemptStatus::Failed);
+        } else {
+            report(i, WifiAttemptStatus::Connecting);
+            success = connectOne(ssids[i], passwords[i], config::WIFI_CONNECT_TIMEOUT_MS);
+            report(i, success ? WifiAttemptStatus::Connected : WifiAttemptStatus::Failed,
+                success ? ipAddress() : std::string{});
+        }
     }
-
-    // Priority 1: home. Priority 2: iPhone hotspot.
-    if (connectOne(WIFI_HOME_SSID, WIFI_HOME_PASSWORD, config::WIFI_CONNECT_TIMEOUT_MS)) {
-        return true;
-    }
-    if (connectOne(WIFI_IPHONE_SSID, WIFI_IPHONE_PASSWORD, config::WIFI_CONNECT_TIMEOUT_MS)) {
-        return true;
-    }
+    if (success) return true;
 
     ESP_LOGW(TAG, "No configured Wi-Fi available");
     return false;
 }
 
 bool WifiManager::connected() const {
-    if (!initialized_) {
+    if (!initialized_ || !(xEventGroupGetBits(s_events) & GOT_IP)) {
         return false;
     }
     wifi_ap_record_t ap{};

@@ -1,114 +1,120 @@
-# ESP32-S3 ePaper Voice Notes — Document de design technique
+# ESP32-S3 ePaper Voice Notes — Technical design document
 
-Version : 0.1  
-Date : 15 septembre 2026  
-Cible : Waveshare ESP32-S3-ePaper-1.54 V2 + serveur Whisper auto-hébergé en LXC
+Version: 0.1
+Date: September 15, 2026
+Target: Waveshare ESP32-S3-ePaper-1.54 V2 + self-hosted Whisper server in LXC
 
----
-
-## 1. Résumé du projet
-
-Le projet est un appareil portable minimaliste de prise de notes vocales basé sur un **Waveshare ESP32-S3-ePaper-1.54 V2**.
-
-L'appareil ne réalise pas la transcription localement. Son rôle est de :
-
-1. enregistrer une note audio lorsque l'utilisateur appuie sur l'unique bouton d'interface ;
-2. sauvegarder immédiatement l'audio sur carte microSD/TF ;
-3. fonctionner même sans réseau ;
-4. se connecter automatiquement au meilleur réseau Wi-Fi connu ;
-5. envoyer les notes en attente à un serveur Whisper hébergé dans un LXC ;
-6. récupérer la transcription ;
-7. stocker la note texte sur la carte SD ;
-8. afficher le résultat sur l'écran ePaper.
-
-Le principe fondamental est **offline-first** : aucune note ne doit être perdue si le Wi-Fi, le serveur ou Internet est indisponible.
+> Historical design baseline: this document preserves the original proposal,
+> including Whisper-era APIs, task splits and starter limitations. For the current
+> Whistle implementation, windowed previews and web consoles, use the root README,
+> `firmware/tests/WEB.md` and `lxc/README.md`. English documentation and interface
+> labels do not change the default French speech-recognition language (`fr`).
 
 ---
 
-## 2. Objectifs
+## 1. Project overview
 
-### 2.1 Objectifs principaux
+This project is a minimalist portable voice-note device based on the **Waveshare ESP32-S3-ePaper-1.54 V2**.
 
-- Prise de note vocale en un geste.
-- Fonctionnement hors ligne complet pour l'enregistrement.
-- Synchronisation différée automatique.
-- Transcription française via Whisper sur serveur local.
-- Conservation locale de la transcription sur carte SD.
-- Interface très simple adaptée à un écran ePaper.
-- Utilisation avec un seul bouton applicatif.
-- Connexion prioritaire au Wi-Fi domestique puis au hotspot iPhone.
-- Faible consommation en veille.
-- Architecture tolérante aux coupures Wi-Fi et aux redémarrages.
+The device does not transcribe locally. Its responsibilities are to:
 
-### 2.2 Hors périmètre initial
+1. record an audio note when the user presses the single interface button;
+2. immediately save the audio to microSD/TF;
+3. work without a network;
+4. automatically connect to the best known Wi-Fi network;
+5. send pending notes to a Whisper server hosted in LXC;
+6. retrieve the transcript;
+7. store the text note on the SD card;
+8. display the result on ePaper.
 
-- STT Whisper directement sur l'ESP32-S3.
-- Édition complète du texte sur l'appareil.
-- Clavier Bluetooth dans la première version.
-- Synchronisation cloud tierce.
-- Interface tactile.
-- Lecture audio/TTS dans la première version.
+The fundamental principle is **offline-first**: no note may be lost when Wi-Fi, the server or the Internet is unavailable.
 
 ---
 
-## 3. Matériel cible
+## 2. Goals
 
-### 3.1 Carte principale
+### 2.1 Main goals
+
+- One-gesture voice recording.
+- Fully offline recording.
+- Automatic deferred synchronization.
+- French transcription through Whisper on a local server.
+- Local transcript storage on SD.
+- A simple interface suited to ePaper.
+- A single application button.
+- Home Wi-Fi takes priority over the iPhone hotspot.
+- Low standby power consumption.
+- Resilience to Wi-Fi interruptions and restarts.
+
+### 2.2 Initially out of scope
+
+- Whisper STT directly on the ESP32-S3.
+- Full text editing on the device.
+- Bluetooth keyboard in the first version.
+- Third-party cloud synchronization.
+- Touch interface.
+- Audio playback/TTS in the first version.
+
+---
+
+## 3. Target hardware
+
+### 3.1 Main board
 
 **Waveshare ESP32-S3-ePaper-1.54 V2**.
 
-Caractéristiques officielles pertinentes :
+Relevant official specifications:
 
-| Élément | Spécification |
+| Component | Specification |
 |---|---|
 | MCU | ESP32-S3-PICO-1-N8R8 |
-| CPU | Dual-core Xtensa LX7, jusqu'à 240 MHz |
+| CPU | Dual-core Xtensa LX7, up to 240 MHz |
 | Flash | 8 MB |
 | PSRAM | 8 MB |
-| SRAM interne | 512 KB |
+| Internal SRAM | 512 KB |
 | Wi-Fi | 2.4 GHz 802.11 b/g/n |
 | Bluetooth | Bluetooth 5 LE |
-| Écran | ePaper 1.54" |
-| Résolution réelle | **200 × 200 px** |
+| Display | 1.54" ePaper |
+| Actual resolution | **200 × 200 px** |
 | Audio | Codec ES8311 |
-| Entrée audio | Microphone embarqué |
-| Stockage | Slot carte TF/microSD |
+| Audio input | Onboard microphone |
+| Storage | TF/microSD card slot |
 | RTC | PCF85063 |
-| Capteur | SHTC3 température/humidité |
-| USB | USB-C natif ESP32-S3 |
-| Batterie | Connecteur Li-ion + gestion de charge |
+| Sensor | SHTC3 temperature/humidity |
+| USB | Native ESP32-S3 USB-C |
+| Battery | Li-ion connector + charging management |
 
-> Important : les maquettes UI de ce dossier ont été conçues comme références carrées. Le panneau réel est **200 × 200 px**. Les versions `screens/native_200x200/` sont uniquement des références réduites ; l'interface finale devra être redessinée nativement à 200 × 200 plutôt que simplement redimensionnée.
+> Important: these UI mockups were designed as square references. The actual panel is **200 × 200 px**. The `screens/native_200x200/` versions are reduced references only; the final interface must be redrawn natively at 200 × 200, not merely resized. These historical raster assets retain their original French labels.
 
-### 3.2 Révision matérielle
+### 3.2 Hardware revision
 
-Le firmware doit cibler explicitement la **V2**.
+The firmware must explicitly target **V2**.
 
-La documentation Waveshare indique que :
+Waveshare documentation states that:
 
-- la V1 utilise un ESP32-S3FH4R2 avec 4 MB Flash et 2 MB PSRAM ;
-- la V2 utilise un ESP32-S3-PICO-1-N8R8 avec 8 MB Flash et 8 MB PSRAM ;
-- les exemples V1 et V2 ne sont pas interchangeables.
+- V1 uses an ESP32-S3FH4R2 with 4 MB Flash and 2 MB PSRAM;
+- V2 uses an ESP32-S3-PICO-1-N8R8 with 8 MB Flash and 8 MB PSRAM;
+- V1 and V2 examples are not interchangeable.
 
-Le code devra donc isoler les définitions hardware dans un fichier dédié, par exemple :
+The code must isolate hardware definitions in a dedicated file, for example:
 
 ```text
 src/board/waveshare_epaper_154_v2.h
 ```
 
-### 3.3 Bouton unique
+### 3.3 Single button
 
-Le design logiciel considère **un seul bouton applicatif**.
+The software design assumes **one application button**.
 
-Le bouton PWR reste réservé à la gestion d'alimentation.
+The PWR button remains reserved for power management.
 
-Recommandation : utiliser un bouton externe sur un GPIO libre, par exemple GPIO1, GPIO2 ou GPIO3 si le boîtier le permet.
+Recommendation: use an external button on a free GPIO, such as GPIO1, GPIO2 or GPIO3, if the enclosure allows it.
 
-Le bouton BOOT/GPIO0 peut techniquement être lu après démarrage, mais il s'agit d'une broche de strapping utilisée pour le mode bootloader. Il est préférable de ne pas en faire le bouton principal si un GPIO libre est disponible.
+BOOT/GPIO0 can technically be read after startup, but it is a strapping pin used for bootloader mode. Prefer a free GPIO for the main button when available.
 
 ---
 
-## 4. Architecture globale
+## 4. Overall architecture
 
 ```text
                 ┌──────────────────────────┐
@@ -116,7 +122,7 @@ Le bouton BOOT/GPIO0 peut techniquement être lu après démarrage, mais il s'ag
                 │ ePaper 1.54 V2           │
                 │                          │
 Button ────────►│ State machine            │
-Micro + ES8311 ►│ Recorder                 │
+Mic + ES8311   ►│ Recorder                 │
                 │ SD queue                 │
                 │ Wi-Fi manager            │
                 │ Sync client              │
@@ -125,8 +131,8 @@ Micro + ES8311 ►│ Recorder                 │
                              │ HTTPS
                   ┌──────────┴──────────┐
                   │                     │
-             Wi-Fi maison          Hotspot iPhone
-             priorité 100          priorité 50
+             Home Wi-Fi            iPhone hotspot
+             priority 100          priority 50
                   │                     │
                   └──────────┬──────────┘
                              │
@@ -146,24 +152,24 @@ Micro + ES8311 ►│ Recorder                 │
 
 ---
 
-## 5. Architecture firmware ESP32
+## 5. ESP32 firmware architecture
 
-### 5.1 Framework recommandé
+### 5.1 Recommended framework
 
 **PlatformIO + ESP-IDF**.
 
-Raisons :
+Reasons:
 
-- meilleur contrôle des tâches FreeRTOS ;
-- API I2S native pour l'ES8311 ;
-- contrôle fin du Wi-Fi ;
+- better FreeRTOS task control;
+- native I2S API for ES8311;
+- fine-grained Wi-Fi control;
 - SDMMC ;
 - deep sleep ;
 - watchdog ;
-- stockage NVS ;
-- meilleure séparation des composants qu'un sketch monolithique.
+- NVS storage;
+- better component separation than a monolithic sketch.
 
-Structure proposée :
+Proposed structure:
 
 ```text
 firmware/
@@ -199,16 +205,16 @@ firmware/
 
 ---
 
-## 6. Machine d'états
+## 6. State machine
 
-États principaux :
+Main states:
 
 ```text
 BOOT
   │
   ▼
 IDLE
-  │ click / double-click selon contexte
+  │ click / double-click depending on context
   ▼
 RECORDING
   │ click
@@ -217,20 +223,20 @@ SAVING
   │
   ▼
 PENDING_SYNC
-  │ réseau disponible
+  │ network available
   ▼
 UPLOADING
   │
   ▼
 WAITING_TRANSCRIPTION
-  │ résultat reçu
+  │ result received
   ▼
 STORE_TRANSCRIPT
   │
   └──────────────► IDLE
 ```
 
-États secondaires :
+Secondary states:
 
 ```text
 MENU
@@ -241,110 +247,110 @@ SERVER_ERROR
 LOW_BATTERY
 ```
 
-### 6.1 Règle importante
+### 6.1 Important rule
 
-La fin de l'enregistrement doit toujours écrire le fichier audio sur SD **avant** toute tentative réseau.
+Stopping a recording must always write the audio file to SD **before** any network attempt.
 
-Le Wi-Fi ne fait jamais partie du chemin critique de création d'une note.
+Wi-Fi is never part of the critical path for creating a note.
 
 ---
 
-## 7. Interaction avec le bouton unique
+## 7. Single-button interaction
 
-Le comportement doit rester prévisible.
+Behavior must remain predictable.
 
-### 7.1 État IDLE
+### 7.1 IDLE state
 
-| Action | Fonction |
+| Action | Function |
 |---|---|
-| Clic simple | Note suivante / écran suivant |
-| Double clic | Démarrer une nouvelle note |
-| Appui long | Ouvrir le menu |
+| Single click | Next note / next screen |
+| Double click | Start a new note |
+| Long press | Open menu |
 
-### 7.2 État RECORDING
+### 7.2 RECORDING state
 
-| Action | Fonction |
+| Action | Function |
 |---|---|
-| Clic simple | Arrêter et sauvegarder |
-| Appui long | Annuler l'enregistrement, optionnel |
+| Single click | Stop and save |
+| Long press | Cancel recording, optional |
 
-La V1 peut ne pas implémenter l'annulation afin de réduire les risques de suppression accidentelle.
+V1 may omit cancellation to reduce the risk of accidental deletion.
 
-### 7.3 État MENU
+### 7.3 MENU state
 
-| Action | Fonction |
+| Action | Function |
 |---|---|
-| Clic simple | Élément suivant |
-| Appui long | Valider l'élément sélectionné |
+| Single click | Next item |
+| Long press | Confirm selected item |
 
-### 7.4 Détection logicielle
+### 7.4 Software detection
 
-Valeurs de départ recommandées :
+Recommended starting values:
 
 ```text
 Debounce       : 35 ms
 Double-click   : <= 350 ms
 Long press     : >= 800 ms
-Very long press: >= 2500 ms, réservé
+Very long press: >= 2500 ms, reserved
 ```
 
 ---
 
-## 8. Interface ePaper
+## 8. ePaper interface
 
-### 8.1 Principes graphiques
+### 8.1 Visual principles
 
 - monochrome ;
-- fond blanc ;
-- traits noirs fins ;
-- typographie bitmap/monospace ;
-- très peu de cadres ;
-- beaucoup d'espace négatif ;
-- icônes simples ;
-- informations hiérarchisées ;
-- pas de faux boutons tactiles ;
-- une seule ligne d'aide en bas liée au bouton physique.
+- white background;
+- thin black lines;
+- bitmap/monospace typography;
+- very few frames;
+- generous negative space;
+- simple icons;
+- hierarchical information;
+- no fake touch buttons;
+- one bottom help line tied to the physical button.
 
-### 8.2 Contraintes ePaper
+### 8.2 ePaper constraints
 
-L'écran ePaper ne doit pas être utilisé comme un LCD temps réel.
+ePaper must not be treated as a real-time LCD.
 
-À éviter :
+Avoid:
 
-- waveform animée à haute fréquence ;
-- timer rafraîchi chaque seconde avec full refresh ;
+- high-frequency animated waveforms;
+- a timer updated every second using full refresh;
 - animations ;
-- clignotements fréquents.
+- frequent flashing.
 
-Pendant l'enregistrement, la waveform des mockups est une **indication visuelle conceptuelle**.
+During recording, the mockup waveform is a **conceptual visual indicator**.
 
-Implémentation recommandée :
+Recommended implementation:
 
-- afficher l'écran RECORDING une fois au démarrage ;
-- mettre à jour le timer à faible fréquence uniquement si le driver supporte correctement le partial refresh ;
-- sinon ne mettre à jour l'écran qu'à la fin de l'enregistrement ;
-- faire périodiquement un full refresh pour supprimer le ghosting.
+- show the RECORDING screen once at recording start;
+- update the timer slowly only if the driver correctly supports partial refresh;
+- otherwise update the screen only when recording ends;
+- periodically perform a full refresh to remove ghosting.
 
-### 8.3 Écrans inclus
+### 8.3 Included screens
 
 #### 01 — IDLE / NOTE
 
-Référence :
+Reference:
 
 ```text
 screens/reference/01_idle_note.png
 ```
 
-Contenu :
+Contents:
 
-- statut Wi-Fi ;
+- Wi-Fi status;
 - SD ;
-- batterie ;
-- date/heure ;
-- numéro de note ;
-- durée audio ;
+- battery;
+- date/time;
+- note number;
+- audio duration;
 - transcription ;
-- état de synchronisation.
+- synchronization status.
 
 #### 02 — RECORDING
 
@@ -352,13 +358,13 @@ Contenu :
 screens/reference/02_recording.png
 ```
 
-Contenu :
+Contents:
 
-- micro ;
-- état REC ;
-- durée ;
-- waveform illustrative ;
-- rappel `1x arrêter`.
+- microphone;
+- REC state;
+- duration;
+- illustrative waveform;
+- `1x stop` reminder.
 
 #### 03 — OFFLINE QUEUE
 
@@ -366,12 +372,12 @@ Contenu :
 screens/reference/03_offline_queue.png
 ```
 
-Contenu :
+Contents:
 
-- réseau absent ;
-- nombre de notes en attente ;
-- dernière note ;
-- possibilité de forcer une synchro.
+- no network;
+- number of pending notes;
+- latest note;
+- option to force synchronization.
 
 #### 04 — SYNCING
 
@@ -379,11 +385,11 @@ Contenu :
 screens/reference/04_syncing.png
 ```
 
-Contenu :
+Contents:
 
-- progression globale ;
-- note actuellement envoyée ;
-- indication Whisper.
+- overall progress;
+- note currently being uploaded;
+- Whisper indicator.
 
 #### 05 — MENU
 
@@ -391,22 +397,22 @@ Contenu :
 screens/reference/05_menu.png
 ```
 
-Menu initial :
+Initial menu:
 
 ```text
-Nouvelle note
-Forcer sync
-Historique
-Réseau
+New note
+Force sync
+History
+Network
 ```
 
 ---
 
-## 9. Enregistrement audio
+## 9. Audio recording
 
-### 9.1 Format recommandé
+### 9.1 Recommended format
 
-Pour Whisper :
+For Whisper:
 
 ```text
 Container       WAV
@@ -416,65 +422,65 @@ Sample rate     16 kHz
 Bitrate         256 kbit/s
 ```
 
-Calcul stockage :
+Storage calculation:
 
 ```text
 16000 samples/s × 2 bytes = 32000 bytes/s
 ≈ 1.92 MB/minute
 ```
 
-Une carte SD de 1 GB peut donc déjà contenir plusieurs heures de notes brutes.
+A 1 GB SD card can already hold several hours of raw notes.
 
-### 9.2 Fichier temporaire
+### 9.2 Temporary file
 
-Pendant l'enregistrement :
+During recording:
 
 ```text
 /audio/recording/current.tmp
 ```
 
-À l'arrêt :
+When stopping:
 
-1. finaliser l'en-tête WAV ;
+1. finalize the WAV header;
 2. `fsync` ;
-3. fermer le fichier ;
-4. renommer atomiquement vers `/audio/pending/<id>.wav`.
+3. close the file;
+4. atomically rename to `/audio/pending/<id>.wav`.
 
-Exemple :
+Example:
 
 ```text
 /audio/pending/20260915T220104Z-0043.wav
 ```
 
-Cette séquence évite qu'une coupure batterie crée une note considérée à tort comme valide.
+This sequence prevents a battery interruption from producing a note incorrectly treated as valid.
 
 ---
 
-## 10. Identifiant des notes
+## 10. Note identifiers
 
-Chaque note possède un identifiant stable :
+Each note has a stable identifier:
 
 ```text
 YYYYMMDDTHHMMSSZ-NNNN
 ```
 
-Exemple :
+Example:
 
 ```text
 20260915T220104Z-0043
 ```
 
-Cet identifiant est utilisé pour :
+This identifier is used for:
 
-- le fichier WAV ;
-- les métadonnées ;
-- l'API ;
-- l'idempotence ;
-- le nom du Markdown final.
+- the WAV file;
+- metadata;
+- the API;
+- idempotence;
+- the final Markdown filename.
 
 ---
 
-## 11. Organisation de la carte SD
+## 11. SD card layout
 
 ```text
 /
@@ -495,26 +501,26 @@ Cet identifiant est utilisé pour :
     └── latest.log
 ```
 
-### 11.1 Politique audio
+### 11.1 Audio policy
 
-Option par défaut :
+Default option:
 
-- conserver le WAV jusqu'à réception de la transcription ;
-- après succès, déplacer le WAV dans `/audio/archive/` ;
-- une option pourra supprimer automatiquement les archives âgées de N jours.
+- retain the WAV until the transcript is received;
+- after success, move the WAV to `/audio/archive/`;
+- an option may automatically delete archives older than N days.
 
-Jamais supprimer le WAV tant que le fichier Markdown n'a pas été écrit et synchronisé sur la SD.
+Never delete the WAV before the Markdown file has been written and synchronized to SD.
 
 ---
 
-## 12. Format d'une note locale
+## 12. Local note format
 
-Exemple :
+Example:
 
 ```markdown
 # Note 0043
 
-Réunion projet demain matin.
+Project meeting tomorrow morning.
 
 ---
 
@@ -526,7 +532,7 @@ Réunion projet demain matin.
 - Status: synced
 ```
 
-Nom du fichier :
+Filename:
 
 ```text
 /notes/2026/09/20260915T220104Z-0043.md
@@ -534,29 +540,29 @@ Nom du fichier :
 
 ---
 
-## 13. Index local
+## 13. Local index
 
-Pour éviter de scanner tous les Markdown au démarrage :
+To avoid scanning every Markdown file at startup:
 
 ```json
 {"id":"20260915T220104Z-0043","file":"/notes/2026/09/20260915T220104Z-0043.md","created":1789502464,"status":"synced"}
 ```
 
-Un objet JSON par ligne dans :
+One JSON object per line in:
 
 ```text
 /notes/index.jsonl
 ```
 
-Le format JSONL permet des append simples et réduit les risques de corruption d'un gros JSON monolithique.
+JSONL enables simple appends and reduces the corruption risk of a large monolithic JSON file.
 
 ---
 
-## 14. Gestion Wi-Fi
+## 14. Wi-Fi management
 
-### 14.1 Réseaux configurés
+### 14.1 Configured networks
 
-Exemple :
+Example:
 
 ```cpp
 struct WifiProfile {
@@ -571,72 +577,72 @@ WifiProfile profiles[] = {
 };
 ```
 
-### 14.2 Priorité
+### 14.2 Priority
 
-Ordre :
+Order:
 
 ```text
-1. Wi-Fi maison
-2. Hotspot iPhone
+1. Home Wi-Fi
+2. iPhone hotspot
 3. Offline
 ```
 
-### 14.3 Règles de bascule
+### 14.3 Switching rules
 
-- ne jamais changer de réseau pendant un enregistrement ;
-- ne jamais interrompre un upload actif uniquement pour changer de SSID ;
-- après une opération réseau terminée, migrer vers un réseau de priorité supérieure s'il est disponible ;
-- en offline, scanner périodiquement avec backoff.
+- never change networks during recording;
+- never interrupt an active upload solely to change SSID;
+- after a network operation completes, migrate to a higher-priority network if available;
+- when offline, scan periodically with backoff.
 
-Exemple :
+Example:
 
 ```text
 5 s → 15 s → 30 s → 60 s → 5 min
 ```
 
-### 14.4 Hotspot iPhone
+### 14.4 iPhone hotspot
 
-L'ESP32-S3 utilise le Wi-Fi **2.4 GHz**.
+The ESP32-S3 uses **2.4 GHz** Wi-Fi.
 
-Sur les iPhone récents, le mode **Maximiser la compatibilité** désactive le 5 GHz/6 GHz pour le hotspot et force le 2.4 GHz avec WPA2, ce qui peut être nécessaire pour garantir la connexion de l'ESP32.
+On recent iPhones, **Maximize Compatibility** disables 5 GHz/6 GHz for the hotspot and forces 2.4 GHz with WPA2, which may be needed for a reliable ESP32 connection.
 
-Configuration iPhone recommandée :
+Recommended iPhone settings:
 
 ```text
-Réglages
-→ Partage de connexion
-→ Maximiser la compatibilité : activé
+Settings
+→ Personal Hotspot
+→ Maximize Compatibility: enabled
 ```
 
-### 14.5 VPN iPhone
+### 14.5 iPhone VPN
 
-Ne pas supposer que les clients Wi-Fi connectés au hotspot de l'iPhone bénéficient automatiquement du tunnel VPN actif sur l'iPhone.
+Do not assume that Wi-Fi clients connected to an iPhone hotspot automatically use the iPhone's active VPN tunnel.
 
-Deux architectures sont possibles :
+Two architectures are possible:
 
-#### A. API purement privée
+#### A. Fully private API
 
 ```text
 ESP → hotspot iPhone → VPN → LAN → LXC
 ```
 
-À utiliser uniquement après validation réelle du routage avec le VPN utilisé.
+Use only after verifying real routing with the chosen VPN.
 
-#### B. API HTTPS accessible depuis Internet — recommandée pour l'usage nomade
+#### B. Internet-accessible HTTPS API — recommended for mobile use
 
 ```text
 ESP → hotspot iPhone → Internet → HTTPS → Nginx Proxy Manager → LXC
 ```
 
-L'API est protégée par token, TLS, rate limiting et limite de taille.
+The API is protected by a token, TLS, rate limiting and a size limit.
 
-Cette option rend le fonctionnement indépendant du comportement VPN/tethering d'iOS.
+This option operates independently of iOS VPN/tethering behavior.
 
 ---
 
-## 15. Synchronisation offline-first
+## 15. Offline-first synchronization
 
-### 15.1 Algorithme
+### 15.1 Algorithm
 
 ```text
 if recording:
@@ -654,9 +660,9 @@ if network available:
     process next pending note
 ```
 
-### 15.2 File FIFO
+### 15.2 FIFO queue
 
-Les notes sont synchronisées dans l'ordre chronologique.
+Notes are synchronized in chronological order.
 
 ```text
 oldest first
@@ -664,15 +670,15 @@ oldest first
 
 ### 15.3 Retry
 
-Les erreurs suivantes sont retryables :
+The following errors are retryable:
 
 - DNS ;
 - timeout ;
-- connexion refusée ;
+- connection refused;
 - HTTP 429 ;
 - HTTP 500/502/503/504.
 
-Backoff exemple :
+Example backoff:
 
 ```text
 10 s
@@ -683,13 +689,13 @@ Backoff exemple :
 30 min
 ```
 
-Les erreurs HTTP 400/401/403 doivent être affichées comme erreur de configuration et ne doivent pas être retryées agressivement.
+HTTP 400/401/403 must be shown as configuration errors and must not be retried aggressively.
 
 ---
 
-## 16. API serveur proposée
+## 16. Proposed server API
 
-### 16.1 Création d'un job
+### 16.1 Create a job
 
 ```http
 POST /api/v1/notes
@@ -698,7 +704,7 @@ Idempotency-Key: 20260915T220104Z-0043
 Content-Type: multipart/form-data
 ```
 
-Form fields :
+Form fields:
 
 ```text
 id
@@ -709,7 +715,7 @@ device_id
 file=<wav>
 ```
 
-Réponse :
+Response:
 
 ```json
 {
@@ -724,14 +730,14 @@ HTTP :
 202 Accepted
 ```
 
-### 16.2 Lecture de l'état
+### 16.2 Read status
 
 ```http
 GET /api/v1/notes/20260915T220104Z-0043
 Authorization: Bearer <token>
 ```
 
-Pendant traitement :
+During processing:
 
 ```json
 {
@@ -740,7 +746,7 @@ Pendant traitement :
 }
 ```
 
-Terminé :
+Completed:
 
 ```json
 {
@@ -748,15 +754,15 @@ Terminé :
   "status": "done",
   "language": "fr",
   "duration": 11.2,
-  "text": "Réunion projet demain matin."
+  "text": "Project meeting tomorrow morning."
 }
 ```
 
 ### 16.3 Idempotence
 
-Si l'ESP renvoie la même note après une coupure réseau, le serveur ne doit pas créer une seconde transcription.
+If the ESP resends the same note after a network interruption, the server must not create a second transcript.
 
-La clé est :
+The key is:
 
 ```text
 Idempotency-Key = note_id
@@ -764,13 +770,13 @@ Idempotency-Key = note_id
 
 ---
 
-## 17. Architecture LXC
+## 17. LXC architecture
 
-Stack recommandée :
+Recommended stack:
 
 ```text
 Debian LXC
-├── Nginx ou Nginx Proxy Manager en frontal
+├── Nginx or Nginx Proxy Manager in front
 ├── notes-api
 │   ├── FastAPI
 │   ├── SQLite
@@ -778,9 +784,9 @@ Debian LXC
 └── whisper.cpp
 ```
 
-Alternative : `faster-whisper` peut remplacer `whisper.cpp` si la machine hôte offre de meilleures performances avec cette stack.
+Alternative: `faster-whisper` can replace `whisper.cpp` if it performs better on the host machine.
 
-### 17.1 Arborescence serveur
+### 17.1 Server directory layout
 
 ```text
 /opt/voice-notes/
@@ -796,7 +802,7 @@ Alternative : `faster-whisper` peut remplacer `whisper.cpp` si la machine hôte 
 
 ### 17.2 SQLite
 
-Table minimale :
+Minimum table:
 
 ```sql
 CREATE TABLE jobs (
@@ -813,62 +819,62 @@ CREATE TABLE jobs (
 
 ---
 
-## 18. Sécurité
+## 18. Security
 
 ### 18.1 Transport
 
-Toujours utiliser :
+Always use:
 
 ```text
 HTTPS
 ```
 
-sauf lors des tout premiers tests strictement LAN.
+except for the earliest strictly LAN-only tests.
 
-### 18.2 Authentification
+### 18.2 Authentication
 
-V1 : bearer token généré aléatoirement d'au moins 32 octets.
+V1: a randomly generated bearer token of at least 32 bytes.
 
 ```http
 Authorization: Bearer <device-token>
 ```
 
-Le token doit être conservé dans NVS ou dans une partition de configuration, pas dans les logs.
+Store the token in NVS or a configuration partition, not in logs.
 
-### 18.3 Serveur
+### 18.3 Server
 
-À appliquer :
+Apply:
 
-- maximum upload, par exemple 20 MB ;
+- upload limit, for example 20 MB;
 - rate limit ;
 - timeout ;
-- validation stricte du MIME ;
-- validation WAV côté serveur ;
-- pas d'exécution de nom de fichier fourni par le client ;
-- journalisation sans token ;
-- service Whisper non exposé directement sur Internet.
+- strict MIME validation;
+- server-side WAV validation;
+- no execution of client-supplied filenames;
+- token-free logging;
+- no direct Internet exposure of the Whisper service.
 
 ---
 
-## 19. Gestion du temps
+## 19. Time management
 
-Sources par ordre de priorité :
+Sources in priority order:
 
 ```text
 1. RTC PCF85063
-2. NTP quand Wi-Fi disponible
-3. heure retournée par le serveur
+2. NTP when Wi-Fi is available
+3. time returned by the server
 ```
 
-Au démarrage :
+At startup:
 
-- lire le RTC ;
-- si réseau disponible, synchroniser NTP ;
-- corriger le RTC si nécessaire.
+- read the RTC;
+- synchronize NTP if a network is available;
+- correct the RTC if needed.
 
-Le stockage interne doit utiliser ISO 8601.
+Internal storage must use ISO 8601.
 
-Exemple :
+Example:
 
 ```text
 2026-09-15T22:01:04+02:00
@@ -876,11 +882,11 @@ Exemple :
 
 ---
 
-## 20. Batterie et énergie
+## 20. Battery and power
 
-### 20.1 Stratégie
+### 20.1 Strategy
 
-En dehors d'un enregistrement ou d'une synchronisation :
+Outside recording or synchronization:
 
 ```text
 render ePaper
@@ -889,32 +895,32 @@ Wi-Fi off
 deep sleep
 ```
 
-Réveil possible par :
+Possible wake sources:
 
-- bouton ;
-- timer RTC ;
-- événement programmé de synchronisation.
+- button;
+- RTC timer;
+- scheduled synchronization event.
 
-### 20.2 Synchronisation périodique
+### 20.2 Periodic synchronization
 
-Si des notes sont en attente :
+If notes are pending:
 
 ```text
 wake every 5 min
 → test Wi-Fi
-→ sync si disponible
+→ sync if available
 → sleep
 ```
 
-Si aucune note n'est en attente, aucun réveil réseau périodique n'est nécessaire.
+If no notes are pending, no periodic network wakeup is needed.
 
 ---
 
-## 21. Stratégie de rendu ePaper
+## 21. ePaper rendering strategy
 
-L'interface doit être générée par primitives plutôt qu'avec des screenshots bitmap complets.
+Generate the interface using primitives rather than full bitmap screenshots.
 
-Exemples :
+Examples:
 
 ```text
 font rendering
@@ -924,22 +930,22 @@ progress bar
 text wrapping
 ```
 
-Pourquoi :
+Reasons:
 
-- bien plus léger en Flash ;
-- texte dynamique ;
-- meilleur rendu à 200 × 200 ;
-- localisation future ;
-- moins de RAM ;
-- pas de dépendance aux mockups rasterisés.
+- much lower Flash usage;
+- dynamic text;
+- better rendering at 200 × 200;
+- future localization;
+- less RAM;
+- no dependency on rasterized mockups.
 
-Les PNG du dossier servent uniquement de référence visuelle.
+The PNGs in this directory are visual references only.
 
 ---
 
-## 22. Configuration utilisateur
+## 22. User configuration
 
-Fichier de configuration logique :
+Logical configuration file:
 
 ```json
 {
@@ -954,15 +960,15 @@ Fichier de configuration logique :
 }
 ```
 
-Les mots de passe Wi-Fi et tokens ne doivent pas être écrits en clair sur la SD si cela peut être évité.
+Avoid writing Wi-Fi passwords and tokens in plaintext on SD where possible.
 
-Recommandation : stockage NVS chiffré à terme.
+Recommendation: eventually use encrypted NVS storage.
 
 ---
 
-## 23. Journalisation
+## 23. Logging
 
-Niveaux :
+Levels:
 
 ```text
 ERROR
@@ -971,65 +977,65 @@ INFO
 DEBUG
 ```
 
-Sur USB série en développement.
+Use USB serial during development.
 
-Sur SD en production, limiter fortement les écritures pour :
+In production, tightly limit SD writes to:
 
-- préserver la carte ;
-- réduire la consommation ;
-- éviter les risques de corruption.
+- preserve the card;
+- reduce power consumption;
+- avoid corruption risks.
 
-Le fichier `/logs/latest.log` peut être circulaire avec une taille maximale, par exemple 128 KB.
+`/logs/latest.log` may be a circular file with a maximum size, for example 128 KB.
 
 ---
 
-## 24. Gestion des erreurs
+## 24. Error handling
 
-### SD absente
+### Missing SD
 
 ```text
 SD ERROR
 Insert SD card
 ```
 
-L'enregistrement est refusé si aucun stockage sûr n'est disponible.
+Recording is refused when no safe storage is available.
 
-### Wi-Fi absent
+### Missing Wi-Fi
 
-Aucun problème fonctionnel.
+No functional problem.
 
-La note reste `pending`.
+The note remains `pending`.
 
-### Serveur indisponible
+### Server unavailable
 
-La note reste `pending`.
+The note remains `pending`.
 
-### Transcription échouée
+### Transcription failed
 
-La note reste disponible avec son WAV.
+The note remains available with its WAV.
 
-État :
+Status:
 
 ```text
 transcription_error
 ```
 
-### Redémarrage pendant upload
+### Restart during upload
 
-Au reboot :
+On reboot:
 
-- déplacer toute entrée `/audio/uploading/` vers `/audio/pending/` ;
-- reprendre grâce à l'idempotency key.
+- move all `/audio/uploading/` entries to `/audio/pending/`;
+- resume using the idempotency key.
 
-### Coupure pendant écriture Markdown
+### Interruption during Markdown writing
 
-Écrire d'abord :
+First write:
 
 ```text
 <id>.md.tmp
 ```
 
-puis rename atomique vers :
+then atomically rename to:
 
 ```text
 <id>.md
@@ -1037,11 +1043,11 @@ puis rename atomique vers :
 
 ---
 
-## 25. État persistant
+## 25. Persistent state
 
-Le firmware doit pouvoir redémarrer à n'importe quel moment sans perdre le contexte.
+The firmware must be able to restart at any point without losing context.
 
-État persistant minimal :
+Minimum persistent state:
 
 ```text
 last_note_id
@@ -1051,24 +1057,24 @@ wifi_failure_count
 selected_ui_note
 ```
 
-Le contenu critique reste néanmoins sur SD afin que la carte soit la source de vérité.
+Critical content remains on SD so the card is the source of truth.
 
 ---
 
 ## 26. OTA
 
-Prévoir OTA dès le début même si elle n'est pas activée dans le MVP.
+Plan for OTA from the beginning, even if disabled in the MVP.
 
-Recommandation :
+Recommendation:
 
 - dual OTA partitions ;
-- firmware signé à terme ;
-- update uniquement quand batterie suffisante ;
-- jamais lancer OTA pendant enregistrement ou sync d'une note.
+- eventually signed firmware;
+- update only with sufficient battery;
+- never start OTA while recording or synchronizing a note.
 
 ---
 
-## 27. Découpage FreeRTOS proposé
+## 27. Proposed FreeRTOS task split
 
 ```text
 ui_task
@@ -1079,28 +1085,28 @@ sync_task
 power_task
 ```
 
-### Priorités conceptuelles
+### Conceptual priorities
 
 ```text
-audio_task   élevée
-storage_task élevée
-ui_task      moyenne
-network_task moyenne
-sync_task    basse
-power_task   basse
+audio_task   high
+storage_task high
+ui_task      medium
+network_task medium
+sync_task    low
+power_task   low
 ```
 
-Pendant RECORDING :
+During RECORDING:
 
-- l'audio et l'écriture SD sont prioritaires ;
-- le Wi-Fi peut être désactivé ou laissé inactif ;
-- aucun refresh ePaper lourd ne doit provoquer d'underrun audio.
+- audio and SD writing take priority;
+- Wi-Fi may be disabled or left inactive;
+- heavy ePaper refreshes must not cause audio underruns.
 
 ---
 
-## 28. Concurrence et buffers audio
+## 28. Concurrency and audio buffers
 
-Utiliser une architecture double-buffer ou ring-buffer :
+Use a double-buffer or ring-buffer architecture:
 
 ```text
 ES8311/I2S
@@ -1112,56 +1118,56 @@ ring buffer
 SD writer
 ```
 
-Le réseau ne lit jamais directement le buffer d'enregistrement.
+The network never reads directly from the recording buffer.
 
-Il ne travaille que sur un fichier WAV déjà fermé.
+It operates only on an already closed WAV file.
 
 ---
 
 ## 29. MVP
 
-Le MVP est terminé lorsque :
+The MVP is complete when:
 
-- [ ] un clic/double-clic démarre une note ;
-- [ ] le micro ES8311 produit un WAV 16 kHz mono correct ;
-- [ ] le fichier est sauvegardé sur SD ;
-- [ ] l'appareil fonctionne sans Wi-Fi ;
-- [ ] les notes pending persistent après reboot ;
-- [ ] le Wi-Fi maison est prioritaire ;
-- [ ] le hotspot iPhone fonctionne ;
-- [ ] la note est envoyée au LXC ;
-- [ ] Whisper retourne du français ;
-- [ ] le Markdown final est écrit sur SD ;
-- [ ] l'UI affiche la transcription ;
-- [ ] le WAV n'est pas perdu en cas d'échec de sync.
+- [ ] a click/double-click starts a note;
+- [ ] the ES8311 microphone produces a valid 16 kHz mono WAV;
+- [ ] the file is saved to SD;
+- [ ] the device works without Wi-Fi;
+- [ ] pending notes survive reboot;
+- [ ] home Wi-Fi has priority;
+- [ ] the iPhone hotspot works;
+- [ ] the note is sent to LXC;
+- [ ] Whisper returns French;
+- [ ] final Markdown is written to SD;
+- [ ] the UI displays the transcript;
+- [ ] the WAV is not lost when synchronization fails.
 
 ---
 
-## 30. Phases de développement
+## 30. Development phases
 
-### Phase 1 — Bring-up hardware
+### Phase 1 — Hardware bring-up
 
-- démarrage carte V2 ;
+- V2 board startup;
 - ePaper ;
 - SD ;
-- bouton ;
+- button;
 - RTC ;
-- batterie ;
-- ES8311 et microphone.
+- battery;
+- ES8311 and microphone.
 
 ### Phase 2 — Audio
 
-- capture I2S ;
+- I2S capture;
 - WAV ;
-- validation sur PC ;
-- enregistrement fiable de 1 à 10 minutes.
+- PC validation;
+- reliable recordings of 1 to 10 minutes.
 
 ### Phase 3 — Storage
 
 - IDs ;
 - queue ;
 - index ;
-- récupération après reboot.
+- reboot recovery.
 
 ### Phase 4 — UI
 
@@ -1174,17 +1180,17 @@ Le MVP est terminé lorsque :
 ### Phase 5 — Wi-Fi
 
 - multi-profile ;
-- priorité ;
-- hotspot iPhone ;
+- priority;
+- iPhone hotspot;
 - backoff.
 
 ### Phase 6 — LXC
 
 - FastAPI ;
-- authentification ;
-- stockage job ;
+- authentication;
+- job storage;
 - whisper.cpp ;
-- API asynchrone.
+- asynchronous API.
 
 ### Phase 7 — Sync
 
@@ -1192,127 +1198,127 @@ Le MVP est terminé lorsque :
 - poll ;
 - retry ;
 - idempotence ;
-- Markdown final.
+- final Markdown.
 
 ### Phase 8 — Power
 
 - Wi-Fi off ;
 - deep sleep ;
-- réveil bouton ;
-- sync périodique.
+- button wakeup;
+- periodic synchronization.
 
-### Phase 9 — Robustesse
+### Phase 9 — Robustness
 
-- tests coupure batterie ;
-- SD pleine ;
-- serveur down ;
-- Wi-Fi instable ;
-- audio long ;
+- battery interruption tests;
+- full SD;
+- server unavailable;
+- unstable Wi-Fi;
+- long audio;
 - OTA.
 
 ---
 
-## 31. Tests de validation
+## 31. Validation tests
 
 ### Test A — Offline
 
-1. désactiver tout Wi-Fi ;
-2. enregistrer 5 notes ;
-3. redémarrer l'ESP ;
-4. vérifier que les 5 WAV sont présents ;
-5. reconnecter le Wi-Fi ;
-6. vérifier la transcription des 5 notes.
+1. disable all Wi-Fi;
+2. record 5 notes;
+3. restart the ESP;
+4. verify that all 5 WAV files are present;
+5. reconnect Wi-Fi;
+6. verify transcription of all 5 notes.
 
-### Test B — Coupure réseau pendant upload
+### Test B — Network interruption during upload
 
-1. lancer sync ;
-2. couper le Wi-Fi en milieu d'upload ;
-3. restaurer Wi-Fi ;
-4. vérifier qu'une seule note existe côté serveur ;
-5. vérifier que le WAV local n'a pas été supprimé prématurément.
+1. start synchronization;
+2. disable Wi-Fi during upload;
+3. restore Wi-Fi;
+4. verify that only one note exists on the server;
+5. verify that the local WAV was not deleted prematurely.
 
-### Test C — Coupure d'alimentation pendant enregistrement
+### Test C — Power interruption during recording
 
-1. enregistrer ;
-2. couper l'alimentation ;
+1. record;
+2. cut power;
 3. reboot ;
-4. vérifier que le `.tmp` n'est pas considéré comme note finale.
+4. verify that the `.tmp` file is not treated as a final note.
 
-### Test D — Priorité réseau
+### Test D — Network priority
 
-1. rendre Maison et iPhone disponibles ;
-2. vérifier Maison ;
-3. couper Maison ;
-4. vérifier bascule iPhone ;
-5. restaurer Maison ;
-6. vérifier retour vers Maison après la transaction réseau en cours.
+1. make Maison and iPhone available;
+2. verify connection to Maison;
+3. disable Maison;
+4. verify fallback to iPhone;
+5. restore Maison;
+6. verify return to Maison after the current network transaction.
 
-### Test E — Serveur Whisper down
+### Test E — Whisper server unavailable
 
-1. enregistrer une note ;
-2. arrêter l'API ;
-3. vérifier état pending ;
-4. redémarrer API ;
-5. vérifier synchronisation automatique.
+1. record a note;
+2. stop the API;
+3. verify pending status;
+4. restart the API;
+5. verify automatic synchronization.
 
 ---
 
-## 32. Points d'attention
+## 32. Points to watch
 
-### Résolution
+### Resolution
 
-Le hardware est **200 × 200**, pas 240 × 240.
+The hardware is **200 × 200**, not 240 × 240.
 
 ### ePaper
 
-Ne pas traiter l'écran comme un écran animé.
+Do not treat the display as an animated screen.
 
-### Hotspot iPhone
+### iPhone hotspot
 
-Activer **Maximiser la compatibilité** si nécessaire afin de garantir du 2.4 GHz.
+Enable **Maximize Compatibility** if needed to ensure 2.4 GHz.
 
-### VPN iPhone
+### iPhone VPN
 
-Tester explicitement le routage des clients du hotspot vers le VPN. Ne pas dépendre de ce comportement sans validation.
+Explicitly test hotspot-client routing through the VPN. Do not rely on this behavior without verification.
 
-### Bouton BOOT
+### BOOT button
 
-GPIO0 est une broche de strapping. Préférer un GPIO libre pour le bouton principal si possible.
+GPIO0 is a strapping pin. Prefer a free GPIO for the main button if possible.
 
 ### SD
 
-La documentation Waveshare demande une carte TF en FAT32.
+Waveshare documentation requires a FAT32 TF card.
 
 ### V1 / V2
 
-Ne jamais mélanger les configurations GPIO et exemples de versions différentes.
+Never mix GPIO configurations and examples from different revisions.
 
 ---
 
-## 33. Évolutions possibles
+## 33. Possible extensions
 
-Après le MVP :
+After the MVP:
 
-- recherche dans les notes ;
-- tags automatiques via LLM local ;
-- résumé journalier ;
-- classement projet/personnel ;
-- endpoint Home Assistant ;
-- interface Web pour consulter les notes ;
-- synchronisation Git/Markdown ;
-- export Obsidian ;
-- chiffrement local ;
-- suppression vocale ;
-- TTS pour lire une note ;
-- clavier Bluetooth ;
-- OTA depuis une release GitHub privée ;
-- indicateur température/humidité discret ;
-- batterie restante estimée ;
-- page diagnostics réseau/SD/audio.
+- note search;
+- automatic tags through a local LLM;
+- daily summary;
+- project/personal classification;
+- Home Assistant endpoint;
+- web interface for viewing notes;
+- Git/Markdown synchronization;
+- Obsidian export;
+- local encryption;
+- voice-controlled deletion;
+- TTS to read a note;
+- Bluetooth keyboard;
+- OTA from a private GitHub release;
+- unobtrusive temperature/humidity indicator;
+- estimated remaining battery;
+- network/SD/audio diagnostics page.
 
 ---
 
-## 34. Maquettes incluses dans cette archive
+## 34. Mockups included in this archive
 
 ```text
 screens/
@@ -1330,24 +1336,24 @@ screens/
     └── 05_menu_200x200_1bit.png
 ```
 
-Les fichiers `reference/` sont les cinq dernières maquettes générées.
+`reference/` contains the five historical generated mockups. Their embedded French raster labels are retained as historical design evidence, not current English UI screenshots.
 
-Les fichiers `native_200x200/` sont des conversions 1-bit destinées uniquement à aider à visualiser les contraintes du panneau réel. Il est recommandé de reconstruire l'UI en primitives graphiques.
+`native_200x200/` contains 1-bit conversions intended only to visualize the actual panel constraints. These also retain French raster labels. Rebuild the UI with graphics primitives rather than editing or reusing these mockups.
 
 ---
 
-## 35. Sources techniques
+## 35. Technical sources
 
-Documentation officielle Waveshare :
+Official Waveshare documentation:
 
 - ESP32-S3-ePaper-1.54 : https://docs.waveshare.com/ESP32-S3-ePaper-1.54
-- Ressources et schéma : https://docs.waveshare.com/ESP32-S3-ePaper-1.54/Resources-And-Documents
+- Resources and schematic: https://docs.waveshare.com/ESP32-S3-ePaper-1.54/Resources-And-Documents
 
-Documentation Apple, hotspot :
+Apple hotspot documentation:
 
 - Personal Hotspot / Maximize Compatibility : https://support.apple.com/guide/security/wi-fi-security-secfd166f620/web
 
-Ces sources doivent être revérifiées lors du développement si Waveshare publie une nouvelle révision matérielle.
+Recheck these sources during development if Waveshare releases a new hardware revision.
 
 ---
 
@@ -1466,7 +1472,7 @@ The application button is intentionally placed on a free GPIO rather than GPIO0/
 
 ### 24.3 ePaper implementation rule
 
-The included display driver is deliberately minimal and uses full refresh for the MVP. The application must not attempt LCD-like animation.
+The display driver uses an initial full refresh followed by automatic full-frame differential partial refresh. Identical frames are skipped; after 10 successful partial updates, the next changed frame performs full cleaning. Sleep and transport failures invalidate the reference and require full recovery. The application must not attempt LCD-like animation. Physical latency and ghosting remain unverified.
 
 The recording screen is drawn once at recording start. The waveform is a static visual indicator. A live timer is intentionally not refreshed once per second.
 
@@ -1516,7 +1522,7 @@ Successful response:
   "status": "done",
   "language": "fr",
   "duration": 11.2,
-  "text": "Réunion projet demain matin.",
+  "text": "Project meeting tomorrow morning.",
   "model": "small",
   "sha256": "...",
   "error": null
@@ -1591,6 +1597,6 @@ Recommended order:
 - RTC-specific time acquisition is not implemented yet; NTP is used when Wi-Fi is available;
 - battery percentage is not yet read from the ADC;
 - OTA is reserved for a later milestone;
-- ePaper partial refresh is not enabled in the initial driver;
+- ePaper partial refresh is implemented; physical waveform performance and ghosting still require validation;
 - network credentials are compile-time values in `secrets.h`; moving them to NVS is planned;
 - the synchronous HTTP request can keep the ESP awake while Whisper works; an asynchronous job API can be introduced later if needed.

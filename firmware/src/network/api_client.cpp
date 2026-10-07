@@ -1,6 +1,8 @@
 #include "network/api_client.h"
 
 #include <cstdio>
+#include <mutex>
+#include <algorithm>
 #include <sys/stat.h>
 
 #include "project_config.h"
@@ -9,10 +11,25 @@
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
+#include "esp_timer.h"
+#include "network/live_preview_helpers.h"
 
 namespace network {
 
 static const char *TAG = "api";
+namespace {
+std::mutex base_mutex;
+std::string runtime_base = VOICE_NOTES_API_BASE_URL;
+}
+std::string ApiClient::defaultBaseUrl() { return VOICE_NOTES_API_BASE_URL; }
+std::string ApiClient::baseUrl() {
+    std::lock_guard<std::mutex> lock(base_mutex);
+    return runtime_base; // immutable per-request copy; never retain a mutable c_str
+}
+void ApiClient::setBaseUrl(const std::string &url) {
+    std::lock_guard<std::mutex> lock(base_mutex);
+    runtime_base = url;
+}
 
 static std::string jsonString(cJSON *root, const char *name) {
     cJSON *item = cJSON_GetObjectItemCaseSensitive(root, name);
@@ -35,13 +52,14 @@ TranscriptResult ApiClient::transcribe(const std::string &note_id, const std::st
         return result;
     }
 
-    std::string url = std::string(VOICE_NOTES_API_BASE_URL) + "/api/v1/notes/" + note_id + "/transcribe";
+    std::string url = baseUrl() + "/api/v1/notes/" + note_id + "/transcribe";
     const bool https = url.rfind("https://", 0) == 0;
 
     esp_http_client_config_t cfg{};
     cfg.url = url.c_str();
     cfg.timeout_ms = config::HTTP_TIMEOUT_MS;
     cfg.keep_alive_enable = true;
+    cfg.disable_auto_redirect = true; // Never follow a new target with the shared credential.
     if (https) {
         cfg.crt_bundle_attach = esp_crt_bundle_attach;
     }
@@ -128,6 +146,70 @@ TranscriptResult ApiClient::transcribe(const std::string &note_id, const std::st
     if (!result.ok) {
         result.error = jsonString(root, "error");
     }
+    cJSON_Delete(root);
+    return result;
+}
+
+TranscriptResult ApiClient::preview(const std::string &note_id, const uint8_t *pcm,
+                                    size_t bytes, const std::atomic<bool> &cancelled) const {
+    TranscriptResult result;
+    const std::string path = live::endpoint(note_id);
+    if (path.empty() || !pcm || !live::validPcmSize(bytes) || cancelled.load()) {
+        result.error = "Invalid or cancelled live request";
+        return result;
+    }
+    const std::string url = baseUrl() + path;
+    esp_http_client_config_t cfg{};
+    cfg.url = url.c_str();
+    cfg.timeout_ms = config::LIVE_HTTP_TIMEOUT_MS;
+    cfg.disable_auto_redirect = true;
+    if (url.rfind("https://", 0) == 0) cfg.crt_bundle_attach = esp_crt_bundle_attach;
+    auto client = esp_http_client_init(&cfg);
+    if (!client) { result.error = "Live HTTP init failed"; return result; }
+    const int64_t deadline = esp_timer_get_time() + config::LIVE_REQUEST_DEADLINE_MS * 1000LL;
+    const auto abort = [&]() { return cancelled.load() || esp_timer_get_time() >= deadline; };
+    const std::string auth = std::string("Bearer ") + VOICE_NOTES_API_TOKEN;
+    esp_http_client_set_method(client, HTTP_METHOD_POST);
+    esp_http_client_set_header(client, "Authorization", auth.c_str());
+    esp_http_client_set_header(client, "Content-Type", "application/octet-stream");
+    bool ok = !abort() && esp_http_client_open(client, static_cast<int>(bytes)) == ESP_OK;
+    size_t sent = 0;
+    while (ok && sent < bytes) {
+        if (abort()) { ok = false; break; }
+        const int n = esp_http_client_write(client, reinterpret_cast<const char *>(pcm + sent),
+                                           static_cast<int>(std::min<size_t>(4096, bytes - sent)));
+        if (n <= 0) { ok = false; break; }
+        sent += static_cast<size_t>(n); // ESP-IDF can write fewer bytes than requested.
+    }
+    if (ok) ok = !abort() && esp_http_client_fetch_headers(client) >= 0;
+    result.http_status = esp_http_client_get_status_code(client);
+    std::string body;
+    body.reserve(1024);
+    while (ok && !esp_http_client_is_complete_data_received(client)) {
+        if (abort() || body.size() >= config::HTTP_RESPONSE_MAX) { ok = false; break; }
+        char chunk[512];
+        const int n = esp_http_client_read(client, chunk, static_cast<int>(
+            std::min<size_t>(sizeof(chunk), config::HTTP_RESPONSE_MAX - body.size())));
+        if (n <= 0) { ok = false; break; }
+        body.append(chunk, static_cast<size_t>(n));
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    if (!ok || abort() || result.http_status != 200) {
+        result.error = "Live request failed, cancelled, or oversized";
+        return result;
+    }
+    cJSON *root = cJSON_ParseWithLength(body.c_str(), body.size());
+    if (!root) { result.error = "Invalid live JSON"; return result; }
+    result.id = jsonString(root, "id");
+    result.status = jsonString(root, "status");
+    result.text = jsonString(root, "text");
+    result.language = jsonString(root, "language");
+    result.model = jsonString(root, "model");
+    result.ok = live::validResponse(note_id, result.id, result.status, result.model,
+        cJSON_IsString(cJSON_GetObjectItemCaseSensitive(root, "text")),
+        cJSON_IsString(cJSON_GetObjectItemCaseSensitive(root, "language")));
+    if (!result.ok) result.error = "Unexpected live response contract";
     cJSON_Delete(root);
     return result;
 }
